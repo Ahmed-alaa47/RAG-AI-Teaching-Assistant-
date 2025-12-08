@@ -1,1 +1,5 @@
-# RAG-AI-Teaching-Assistant-
+## Installation
+### install required package 
+'''
+ pip install pypika
+'''

@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import List
-from langchain.schema import Document
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import (
     PyPDFLoader,
     Docx2txtLoader,
@@ -13,7 +13,7 @@ import logging
 
 # Import token-based splitter
 try:
-    from langchain.text_splitter import TokenTextSplitter
+    from langchain_text_splitters import TokenTextSplitter
     import tiktoken
     TOKEN_SPLITTER_AVAILABLE = True
 except ImportError:
@@ -25,7 +25,7 @@ OCR_AVAILABLE = False
 if ENABLE_OCR:
     try:
         import pytesseract
-        from pdf2image import convert_from_path
+        # from pdf2image import convert_from_path  # Unused, as we use fitz for image extraction
         from PIL import Image
         import fitz  # PyMuPDF
         
@@ -37,7 +37,7 @@ if ENABLE_OCR:
         logger.info("OCR enabled - will extract text from images in PDFs")
     except ImportError as e:
         logging.warning(f"OCR libraries not installed: {e}")
-        logging.warning("Install: pip install pytesseract pdf2image pymupdf Pillow")
+        logging.warning("Install: pip install pytesseract pymupdf Pillow")
         logging.warning("Also install Tesseract: https://github.com/UB-Mannheim/tesseract/wiki")
 
 logging.basicConfig(level=logging.INFO)

@@ -20,9 +20,9 @@ EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2" 
 EMBEDDING_DEVICE = "cuda"  # Use GPU! Change to "cpu" if you have issues
 
 # Document processing settings
-CHUNK_SIZE = 512  # tokens (not characters) - ~350-400 words
-CHUNK_OVERLAP = 50  # tokens overlap between chunks
-USE_TOKEN_SPLITTING = True  # Use token-based splitting instead of character-based
+CHUNK_SIZE = 1000  # characters (approx 150-250 words)
+CHUNK_OVERLAP = 200  # characters overlap
+USE_TOKEN_SPLITTING = False  # Use character-based splitting instead of token-based
 ENABLE_OCR = True  # Extract text from images in PDFs using OCR
 
 # Retrieval settings

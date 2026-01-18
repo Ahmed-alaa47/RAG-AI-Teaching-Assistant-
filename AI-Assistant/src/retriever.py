@@ -1,5 +1,5 @@
 from typing import List
-from langchain.schema import Document
+from langchain_core.documents import Document
 from src.vector_store import VectorStoreManager
 from config.settings import TOP_K_RESULTS, SIMILARITY_THRESHOLD
 import logging

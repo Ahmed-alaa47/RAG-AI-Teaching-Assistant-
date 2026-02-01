@@ -4,8 +4,10 @@ from langchain_community.vectorstores import Chroma
 from src.embeddings import EmbeddingManager
 from config.settings import CHROMA_DB_DIR, COLLECTION_NAME
 import logging
+import shutil
+import os
 
-logging.basicConfig(level=logging.INFO)
+# logging.basicConfig(level=logging.INFO)  # Removed central logging config
 logger = logging.getLogger(__name__)
 
 
@@ -27,14 +29,15 @@ class VectorStoreManager:
         embeddings = self.embedding_manager.get_embeddings()
         
         # Delete existing collection if it exists
-        try:
-            import shutil
-            import os
-            if os.path.exists(self.persist_directory):
+        if os.path.exists(self.persist_directory):
+            try:
                 shutil.rmtree(self.persist_directory)
                 logger.info("Removed old vector store")
-        except Exception as e:
-            logger.warning(f"Could not remove old vector store: {e}")
+            except OSError as e:
+                logger.error(f"Error removing old vector store: {e}")
+                # We might want to raise here or continue depending on strategy
+                # For now, let's try to continue but warn
+                logger.warning("Attempting to create vector store despite deletion failure...")
         
         self.vector_store = Chroma.from_documents(
             documents=documents,

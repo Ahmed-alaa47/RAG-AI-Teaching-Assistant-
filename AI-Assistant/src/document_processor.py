@@ -1,5 +1,9 @@
 from pathlib import Path
-from typing import List
+from datetime import datetime
+from typing import List, Dict, Callable
+import logging
+import os
+
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import (
@@ -8,40 +12,42 @@ from langchain_community.document_loaders import (
     UnstructuredPowerPointLoader,
     TextLoader
 )
-from config.settings import CHUNK_SIZE, CHUNK_OVERLAP, SUPPORTED_EXTENSIONS, USE_TOKEN_SPLITTING, ENABLE_OCR
-import logging
 
-# Import token-based splitter
-try:
-    from langchain_text_splitters import TokenTextSplitter
-    import tiktoken
-    TOKEN_SPLITTER_AVAILABLE = True
-except ImportError:
-    TOKEN_SPLITTER_AVAILABLE = False
-    logging.warning("tiktoken not installed. Using character-based splitting.")
+from config.settings import (
+    CHUNK_SIZE, 
+    CHUNK_OVERLAP, 
+    ENABLE_OCR, 
+    TESSERACT_CMD
+)
 
-# Import OCR libraries
-OCR_AVAILABLE = False
-if ENABLE_OCR:
-    try:
-        import pytesseract
-        # from pdf2image import convert_from_path  # Unused, as we use fitz for image extraction
-        from PIL import Image
-        import fitz  # PyMuPDF
-        
-        # Set Tesseract path for Windows
-        pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-        
-        OCR_AVAILABLE = True
-        logger = logging.getLogger(__name__)
-        logger.info("OCR enabled - will extract text from images in PDFs")
-    except ImportError as e:
-        logging.warning(f"OCR libraries not installed: {e}")
-        logging.warning("Install: pip install pytesseract pymupdf Pillow")
-        logging.warning("Also install Tesseract: https://github.com/UB-Mannheim/tesseract/wiki")
-
-logging.basicConfig(level=logging.INFO)
+# Configure logging
 logger = logging.getLogger(__name__)
+
+# OCR Dependencies and Configuration
+OCR_AVAILABLE = False
+try:
+    import pytesseract
+    from PIL import Image
+    import fitz  # PyMuPDF
+    
+    # Configure Tesseract from settings
+    if TESSERACT_CMD:
+        if os.path.exists(TESSERACT_CMD):
+            pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+        else:
+            # If explicit path is provided but missing, warn user. 
+            # If it's just 'tesseract', shutil.which or system lookup applies.
+            if os.path.isabs(TESSERACT_CMD) and not os.path.exists(TESSERACT_CMD):
+                 logger.warning(f"Configured Tesseract executable not found at: {TESSERACT_CMD}")
+            else:
+                 pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+
+    OCR_AVAILABLE = True
+    logger.info("OCR libraries available. Image text extraction enabled.")
+
+except ImportError as e:
+    logger.warning(f"OCR libraries not installed: {e}")
+    logger.warning("To enable OCR (PDF images/scans + Image files), install: pip install pytesseract pymupdf Pillow")
 
 
 class DocumentProcessor:
@@ -49,64 +55,129 @@ class DocumentProcessor:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         
-        # Choose splitter based on settings and availability
-        if USE_TOKEN_SPLITTING and TOKEN_SPLITTER_AVAILABLE:
-            logger.info(f"Using TOKEN-based text splitter (chunk_size={chunk_size} tokens)")
-            self.text_splitter = TokenTextSplitter(
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap
-            )
-        else:
-            logger.info(f"Using CHARACTER-based text splitter (chunk_size={chunk_size} chars)")
-            self.text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-                length_function=len
-            )
+        logger.info(f"Using CHARACTER-based text splitter (chunk_size={chunk_size} chars)")
+        self.text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            length_function=len
+        )
+
+        # Loader Registry
+        self.loader_mapping: Dict[str, Callable[[str], List[Document]]] = {
+            '.pdf': self._load_pdf,
+            '.docx': self._load_docx,
+            '.pptx': self._load_pptx,
+            '.txt': self._load_txt,
+        }
     
+    def process_documents(self, source_path: str) -> List[Document]:
+        """Complete pipeline: load and split documents."""
+        path = Path(source_path)
+        
+        if path.is_file():
+            documents = self.load_document(str(path))
+        elif path.is_dir():
+            documents = self.load_directory(str(path))
+        else:
+            logger.error(f"Invalid path: {source_path}")
+            return []
+        
+        if not documents:
+            logger.warning("No documents loaded")
+            return []
+        
+        chunks = self.split_documents(documents)
+        return chunks
+
+    def load_directory(self, directory_path: str) -> List[Document]:
+        """Load all supported documents from a directory."""
+        path = Path(directory_path)
+        all_documents = []
+        
+        for file_path in path.rglob('*'):
+            if file_path.is_file() and file_path.suffix.lower() in self.loader_mapping:
+                docs = self.load_document(str(file_path))
+                all_documents.extend(docs)
+        
+        logger.info(f"Loaded {len(all_documents)} total documents from {directory_path}")
+        return all_documents
+
     def load_document(self, file_path: str) -> List[Document]:
         """Load a single document based on its file extension."""
         path = Path(file_path)
         extension = path.suffix.lower()
         
-        if extension not in SUPPORTED_EXTENSIONS:
+        if extension not in self.loader_mapping:
             logger.warning(f"Unsupported file type: {extension}")
             return []
         
+        loader_func = self.loader_mapping.get(extension)
+        if not loader_func:
+            logger.warning(f"No loader registered for extension: {extension}")
+            return []
+
         try:
-            if extension == '.pdf':
-                # Try OCR if enabled
-                if ENABLE_OCR and OCR_AVAILABLE:
-                    logger.info(f"Loading PDF with OCR: {path.name}")
-                    documents = self._load_pdf_with_ocr(file_path)
-                    if documents:
-                        return documents
-                    logger.info("OCR failed, falling back to standard PDF loader")
-                
-                # Standard PDF loading
-                loader = PyPDFLoader(file_path)
-            elif extension == '.docx':
-                loader = Docx2txtLoader(file_path)
-            elif extension == '.pptx':
-                loader = UnstructuredPowerPointLoader(file_path)
-            elif extension == '.txt':
-                loader = TextLoader(file_path)
-            else:
-                return []
+            # Execute specific loader
+            documents = loader_func(file_path)
             
-            documents = loader.load()
-            logger.info(f"Loaded {len(documents)} pages from {path.name}")
+            # Enrich metadata
+            self._enrich_metadata(documents, path)
+            
+            logger.info(f"Loaded {len(documents)} pages/items from {path.name}")
             return documents
         
         except Exception as e:
             logger.error(f"Error loading {file_path}: {str(e)}")
             return []
-    
+
+    def split_documents(self, documents: List[Document]) -> List[Document]:
+        """Split documents into smaller chunks."""
+        chunks = self.text_splitter.split_documents(documents)
+        logger.info(f"Split into {len(chunks)} chunks")
+        return chunks
+
+    def _enrich_metadata(self, documents: List[Document], path: Path):
+        """Add standard metadata to all documents."""
+        for doc in documents:
+            doc.metadata["file_name"] = path.name
+            doc.metadata["file_type"] = path.suffix.lower()
+            doc.metadata["ingestion_timestamp"] = datetime.now().isoformat()
+            # Ensure source is consistent
+            doc.metadata["source"] = str(path.absolute())
+
+    # --- Specific Loaders ---
+
+    def _load_docx(self, file_path: str) -> List[Document]:
+        return Docx2txtLoader(file_path).load()
+
+    def _load_pptx(self, file_path: str) -> List[Document]:
+        return UnstructuredPowerPointLoader(file_path).load()
+
+    def _load_txt(self, file_path: str) -> List[Document]:
+        return TextLoader(file_path).load()
+
+    def _load_pdf(self, file_path: str) -> List[Document]:
+        """Load PDF with fallback to OCR if needed."""
+        # Hybrid approach: Try OCR first if enabled, checking internal logic,
+        # otherwise standard load.
+        
+        path = Path(file_path)
+        
+        # 1. Try OCR logic if enabled
+        if ENABLE_OCR and OCR_AVAILABLE:
+            logger.info(f"Attempting PDF load with OCR check: {path.name}")
+            documents = self._load_pdf_with_ocr(file_path)
+            if documents:
+                return documents
+            logger.info("OCR extraction yielded no results or failed, falling back to standard loader.")
+
+        # 2. Standard loading
+        return PyPDFLoader(file_path).load()
+
     def _load_pdf_with_ocr(self, file_path: str) -> List[Document]:
-        """Load PDF and extract text from images using OCR."""
+        """Load PDF and extract text from images using OCR if text is sparse."""
+        # Preserving original logic and heuristics exactly as requested.
         try:
-            import fitz  # PyMuPDF
-            
             documents = []
             pdf_document = fitz.open(file_path)
             
@@ -116,7 +187,7 @@ class DocumentProcessor:
                 # Extract regular text first
                 text = page.get_text()
                 
-                # If page has little text, try OCR on images
+                # If page has little text, try OCR on images (Heuristic: < 100 chars)
                 if len(text.strip()) < 100:
                     # Get images from page
                     image_list = page.get_images()
@@ -153,47 +224,19 @@ class DocumentProcessor:
                     documents.append(doc)
             
             pdf_document.close()
-            logger.info(f"Loaded {len(documents)} pages with OCR from {Path(file_path).name}")
+            # If no documents extracted via this method (and we didn't crash), 
+            # we return what we found. If list is empty, caller falls back.
+            # (Note: Original code returned documents if any were found, else fell back?)
+            # Original code: 
+            #   documents = self._load_pdf_with_ocr(file_path)
+            #   if documents: return documents
+            # So if this returns [] or fails, we fall back.
+            
+            if documents:
+                logger.info(f"Loaded {len(documents)} pages via custom PDF logic from {Path(file_path).name}")
+            
             return documents
         
         except Exception as e:
             logger.error(f"OCR processing failed: {e}")
             return []
-    
-    def load_directory(self, directory_path: str) -> List[Document]:
-        """Load all supported documents from a directory."""
-        path = Path(directory_path)
-        all_documents = []
-        
-        for file_path in path.rglob('*'):
-            if file_path.is_file() and file_path.suffix.lower() in SUPPORTED_EXTENSIONS:
-                docs = self.load_document(str(file_path))
-                all_documents.extend(docs)
-        
-        logger.info(f"Loaded {len(all_documents)} total documents from {directory_path}")
-        return all_documents
-    
-    def split_documents(self, documents: List[Document]) -> List[Document]:
-        """Split documents into smaller chunks."""
-        chunks = self.text_splitter.split_documents(documents)
-        logger.info(f"Split into {len(chunks)} chunks")
-        return chunks
-    
-    def process_documents(self, source_path: str) -> List[Document]:
-        """Complete pipeline: load and split documents."""
-        path = Path(source_path)
-        
-        if path.is_file():
-            documents = self.load_document(str(path))
-        elif path.is_dir():
-            documents = self.load_directory(str(path))
-        else:
-            logger.error(f"Invalid path: {source_path}")
-            return []
-        
-        if not documents:
-            logger.warning("No documents loaded")
-            return []
-        
-        chunks = self.split_documents(documents)
-        return chunks

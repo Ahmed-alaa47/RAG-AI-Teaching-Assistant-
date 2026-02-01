@@ -20,19 +20,22 @@ EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2" 
 EMBEDDING_DEVICE = "cuda"  # Use GPU! Change to "cpu" if you have issues
 
 # Document processing settings
-CHUNK_SIZE = 1000  # characters (approx 150-250 words)
-CHUNK_OVERLAP = 200  # characters overlap
-USE_TOKEN_SPLITTING = False  # Use character-based splitting instead of token-based
+CHUNK_SIZE = 800  # characters (approx 150-250 words)
+CHUNK_OVERLAP = 150  # characters overlap
 ENABLE_OCR = True  # Extract text from images in PDFs using OCR
 
 # Retrieval settings
-TOP_K_RESULTS = 6  # Increased for better coverage of comparison questions
-SIMILARITY_THRESHOLD = 0.2  # Lowered to catch comparison questions
+TOP_K_RESULTS = 4  # Increased for better context coverage
+SIMILARITY_THRESHOLD = 0.0  # No threshold - retrieve all TOP_K results
 
 # LLM settings
 USE_OLLAMA = True  # Set to False to use simple context display
 OLLAMA_MODEL = "llama3.1"  # Best for Arabic & English!
 OLLAMA_BASE_URL = "http://localhost:11434"
+
+# OCR Settings
+# Allow overriding via environment variable, otherwise try default paths
+TESSERACT_CMD = os.getenv("TESSERACT_PATH", r'C:\Program Files\Tesseract-OCR\tesseract.exe' if os.name == 'nt' else 'tesseract')
 
 # Supported file types
 SUPPORTED_EXTENSIONS = ['.pdf', '.docx', '.pptx', '.txt']

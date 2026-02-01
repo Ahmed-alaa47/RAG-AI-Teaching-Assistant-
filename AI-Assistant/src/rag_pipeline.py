@@ -2,19 +2,12 @@ from typing import Dict
 from src.document_processor import DocumentProcessor
 from src.vector_store import VectorStoreManager
 from src.retriever import Retriever
-from config.settings import RAW_DATA_DIR, USE_OLLAMA, OLLAMA_MODEL, OLLAMA_BASE_URL
+from src.generator import Generator
+from config.settings import RAW_DATA_DIR
 import logging
 
-logging.basicConfig(level=logging.INFO)
+# logging.basicConfig(level=logging.INFO)  # Removed central logging config
 logger = logging.getLogger(__name__)
-
-# Try to import Ollama
-try:
-    import ollama
-    OLLAMA_AVAILABLE = True
-except ImportError:
-    OLLAMA_AVAILABLE = False
-    logger.warning("Ollama not installed. Install with: pip install ollama")
 
 
 class RAGPipeline:
@@ -23,6 +16,7 @@ class RAGPipeline:
         self.document_processor = DocumentProcessor()
         self.vector_store_manager = VectorStoreManager()
         self.retriever = Retriever()
+        self.generator = Generator()
         self.is_initialized = False
     
     def initialize(self, data_path: str = None):
@@ -77,9 +71,28 @@ class RAGPipeline:
         
         # Retrieve relevant documents
         try:
-            documents = self.retriever.retrieve(question)
-            logger.info(f"Retrieved {len(documents)} documents")
+            raw_documents = self.retriever.retrieve(question)
+            logger.info(f"Retrieved {len(raw_documents)} raw documents")
             
+            # Filter out assessment/question-based documents
+            documents = []
+            assessment_keywords = [
+                "which of the following", "question", "solve", 
+                "a)", "b)", "c)", "d)", 
+                "اختر", "أي مما يلي"
+            ]
+            
+            for doc in raw_documents:
+                content_lower = doc.page_content.lower()
+                is_assessment = any(keyword in content_lower for keyword in assessment_keywords)
+                
+                if not is_assessment:
+                    documents.append(doc)
+                else:
+                    logger.info(f"Filtered out assessment document: {doc.page_content[:50]}...")
+            
+            logger.info(f"Remaining documents after filtering: {len(documents)}")
+
             # Debug: print first document
             if documents:
                 logger.info(f"First document preview: {documents[0].page_content[:100]}")
@@ -97,7 +110,7 @@ class RAGPipeline:
         context = "\n\n".join([doc.page_content for doc in documents])
         
         # Generate answer
-        answer = self._generate_answer(question, context)
+        answer = self.generator.generate_answer(question, context, question_type=None)
         
         # Extract source information
         sources = []
@@ -114,52 +127,3 @@ class RAGPipeline:
             "context": context
         }
     
-    def _generate_answer(self, question: str, context: str) -> str:
-        """Generate answer from context using Ollama or simple extraction."""
-        
-        # Check if Ollama should be used and is available
-        if USE_OLLAMA and OLLAMA_AVAILABLE:
-            try:
-                return self._generate_with_ollama(question, context)
-            except Exception as e:
-                logger.error(f"Ollama generation failed: {e}")
-                logger.info("Falling back to simple context display")
-        
-        # Fallback: Simple context display
-        return f"Based on the course materials:\n\n{context[:800]}..."
-    
-    def _generate_with_ollama(self, question: str, context: str) -> str:
-        """Generate answer using Ollama local LLM with language detection."""
-        
-        # Detect if question contains Arabic characters
-        has_arabic = any('\u0600' <= char <= '\u06FF' for char in question)
-        
-        if has_arabic:
-            # Arabic prompt
-            prompt = f"""بناءً على المحتوى التعليمي التالي، أجب على سؤال الطالب بوضوح وبشكل تعليمي.
-
-المحتوى التعليمي:
-{context}
-
-سؤال الطالب: {question}
-
-الإجابة (كن واضحاً وتعليمياً):"""
-        else:
-            # English prompt
-            prompt = f"""Based on the following course material, answer the student's question clearly and concisely.
-
-Course Material:
-{context}
-
-Student Question: {question}
-
-Answer (be educational and clear):"""
-
-        try:
-            response = ollama.generate(
-                model=OLLAMA_MODEL,
-                prompt=prompt
-            )
-            return response['response']
-        except Exception as e:
-            raise Exception(f"Ollama error: {e}. Make sure Ollama is installed and '{OLLAMA_MODEL}' model is downloaded.")

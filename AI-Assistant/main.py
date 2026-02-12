@@ -45,16 +45,17 @@ def main():
             print(f"\n✗ Error during initialization: {str(init_error)}")
             print("\nPlease ensure:")
             print(f"1. Course files are in: {RAW_DATA_DIR}")
-            print("2. Files are in supported formats: PDF, DOCX, PPTX, TXT")
+            print("2. Files are in supported formats: PDF, DOCX, PPTX, TXT, Images (PNG, JPG)")
             return
     
     print("\n" + "=" * 60)
-    print("You can now ask questions about your course materials!")
-    print("يمكنك الآن طرح أسئلة حول موادك الدراسية!")
+    print("You can now ask questions about your course materials or provide a YouTube URL!")
+    print("يمكنك الآن طرح أسئلة حول موادك الدراسية أو تزويدنا برابط يوتيوب!")
     print("Type 'quit' or 'exit' to stop")
     print("=" * 60 + "\n")
     
     # Interactive query loop
+    history = []
     while True:
         try:
             question = input("\n🎓 Your question: ").strip()
@@ -70,12 +71,19 @@ def main():
             print_divider()
             print("🔍 Searching course materials...\n")
             
-            # Get answer
-            result = rag.query(question)
+            # Get answer with history
+            result = rag.query(question, history=history)
             
             # Display answer
             print("📖 Answer:")
             print(result['answer'])
+            
+            # Update history (keep last 5 interactions to prevent prompt bloat)
+            history.append({"role": "user", "content": question})
+            history.append({"role": "assistant", "content": result['answer']})
+            
+            if len(history) > 10:  # 5 user prompts + 5 assistant responses
+                history = history[-10:]
             
             # Display sources
             if result['sources']:

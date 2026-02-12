@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import List, Dict, Callable
 import logging
 import os
+import pickle
 
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -68,6 +69,9 @@ class DocumentProcessor:
             '.docx': self._load_docx,
             '.pptx': self._load_pptx,
             '.txt': self._load_txt,
+            '.png': self._load_image,
+            '.jpg': self._load_image,
+            '.jpeg': self._load_image,
         }
     
     def process_documents(self, source_path: str) -> List[Document]:
@@ -88,6 +92,27 @@ class DocumentProcessor:
         
         chunks = self.split_documents(documents)
         return chunks
+
+    def save_chunks(self, chunks: List[Document], cache_path: str):
+        """Save chunks to a pickle file."""
+        try:
+            with open(cache_path, 'wb') as f:
+                pickle.dump(chunks, f)
+            logger.info(f"Saved {len(chunks)} chunks to cache: {cache_path}")
+        except Exception as e:
+            logger.error(f"Error saving chunks to cache: {e}")
+
+    def load_chunks(self, cache_path: str) -> List[Document]:
+        """Load chunks from a pickle file."""
+        try:
+            if os.path.exists(cache_path):
+                with open(cache_path, 'rb') as f:
+                    chunks = pickle.load(f)
+                logger.info(f"Loaded {len(chunks)} chunks from cache: {cache_path}")
+                return chunks
+        except Exception as e:
+            logger.error(f"Error loading chunks from cache: {e}")
+        return []
 
     def load_directory(self, directory_path: str) -> List[Document]:
         """Load all supported documents from a directory."""
@@ -155,6 +180,26 @@ class DocumentProcessor:
 
     def _load_txt(self, file_path: str) -> List[Document]:
         return TextLoader(file_path).load()
+
+    def _load_image(self, file_path: str) -> List[Document]:
+        """Load standalone image file and extract text using OCR."""
+        if not (OCR_AVAILABLE and ENABLE_OCR):
+            logger.warning(f"OCR not available or disabled. Cannot process image: {file_path}")
+            return []
+
+        try:
+            image = Image.open(file_path)
+            # Extract text (Arabic + English)
+            ocr_text = pytesseract.image_to_string(image, lang='eng+ara')
+            
+            if ocr_text.strip():
+                return [Document(page_content=ocr_text, metadata={"source": file_path})]
+            else:
+                logger.info(f"No text extracted from image: {file_path}")
+                return []
+        except Exception as e:
+            logger.error(f"Error processing image {file_path}: {e}")
+            return []
 
     def _load_pdf(self, file_path: str) -> List[Document]:
         """Load PDF with fallback to OCR if needed."""

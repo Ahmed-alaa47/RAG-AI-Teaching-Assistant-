@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  rag-app:
+    build: .
+    volumes:
+      - ./AI-Assistant:/app/AI-Assistant
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      # We don't need to overide TESSERACT_PATH here as it's standard in linux
+      # Keep the container running to allow us to exec into it or run commands
+    command: /bin/bash -c "tail -f /dev/null"

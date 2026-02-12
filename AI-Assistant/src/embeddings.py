@@ -19,7 +19,8 @@ class EmbeddingManager:
             self.embeddings = HuggingFaceEmbeddings(
                 model_name=self.model_name,
                 model_kwargs={'device': EMBEDDING_DEVICE},
-                encode_kwargs={'normalize_embeddings': True}
+                encode_kwargs={'normalize_embeddings': True},
+                cache_folder=None # Uses default HF cache
             )
             logger.info("Embedding model loaded successfully")
         

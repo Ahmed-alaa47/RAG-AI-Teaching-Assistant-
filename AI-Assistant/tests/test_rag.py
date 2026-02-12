@@ -13,8 +13,9 @@ class TestDocumentProcessor(unittest.TestCase):
     
     def test_text_splitter_initialization(self):
         """Test that text splitter is properly initialized."""
+        from config.settings import CHUNK_SIZE
         self.assertIsNotNone(self.processor.text_splitter)
-        self.assertEqual(self.processor.chunk_size, 512)
+        self.assertEqual(self.processor.chunk_size, CHUNK_SIZE)
     
     def test_supported_extensions(self):
         """Test that correct file extensions are supported."""
@@ -57,7 +58,7 @@ class TestRAGPipeline(unittest.TestCase):
         """Test answer generation from context."""
         question = "What is machine learning?"
         context = "Machine learning is a subset of artificial intelligence."
-        answer = self.pipeline._generate_answer(question, context)
+        answer = self.pipeline.generator.generate_answer(question, context)
         self.assertIsInstance(answer, str)
         self.assertGreater(len(answer), 0)
 

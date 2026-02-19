@@ -4,6 +4,7 @@ from src.vector_store import VectorStoreManager
 from src.retriever import Retriever
 from src.generator import Generator
 from src.youtube_processor import YouTubeProcessor
+from src.recommender import RecommendationEngine
 from config.settings import RAW_DATA_DIR
 import logging
 import os
@@ -20,6 +21,7 @@ class RAGPipeline:
         self.retriever = Retriever()
         self.generator = Generator()
         self.youtube_processor = YouTubeProcessor()
+        self.recommender = RecommendationEngine()
         self.is_initialized = False
     
     def initialize(self, data_path: str = None):
@@ -123,16 +125,70 @@ class RAGPipeline:
             course_text = "\n\n".join([doc.page_content for doc in documents])
             context_parts.append("[SOURCE: OFFICIAL_COURSE_MATERIALS]\n" + course_text)
         
-        if not context_parts:
+        # 4. Check for Recommendation intent
+        recommendation_data = None
+        recommendation_keywords = [
+            "recommend", "course", "resource", "learn", "article", "youtube", 
+            "مقترح", "ترشيح", "تعلم", "كورس", "دورة", "شرح", "مصادر", "فيديو",
+            "مواد", "فيديوهات", "قناة"
+        ]
+        
+        question_lower = question.lower()
+        if any(keyword in question_lower for keyword in recommendation_keywords):
+            logger.info("Recommendation intent detected, fetching additional resources...")
+            
+            # Better topic extraction: Remove common stop phrases
+            topic = question_lower
+            stop_phrases = [
+                "recommend", "can you", "i want to learn", "give me", 
+                "courses for", "articles about", "about", "some", "best", "please",
+                "رشح", "ممكن", "عايز", "اتعلم", "كورس", "دورة", "عن", "افضل", "أفضل", "لي", "اعطني"
+            ]
+            
+            # Additional personal pronouns and fillers to remove
+            top_fillers = ["me", "give", "find", "some", "good", "great", "excellent"]
+            for filler in top_fillers:
+                topic = topic.replace(f" {filler} ", " ")
+                if topic.startswith(f"{filler} "):
+                    topic = topic[len(filler)+1:]
+                if topic.endswith(f" {filler}"):
+                    topic = topic[:-len(filler)-1]
+            
+            for phrase in stop_phrases:
+                topic = topic.replace(phrase, "")
+            
+            # Final cleaning of redundant spacing and punctuation
+            topic = " ".join(topic.split())
+            topic = topic.strip(" ?!.،؟")
+            
+            # Final fallback if topic is empty or too short
+            search_query = topic if len(topic) > 2 else question
+            logger.info(f"Final search query for YouTube: '{search_query}'")
+            recommendation_data = self.recommender.get_all_recommendations(search_query)
+            
+            yt_count = len(recommendation_data.get('youtube', []))
+            logger.info(f"Found {yt_count} YouTube recommendations")
+
+        # 5. Handle empty context return - only if NO recommendations either
+        if not context_parts and not recommendation_data:
             return {
-                "answer": "I couldn't find any relevant information in the video or course materials.",
+                "answer": "I couldn't find any relevant information in the video or course materials, and no recommendations were found.",
+                "sources": []
+            } or {
+                "answer": "لم أتمكن من العثور على معلومات ذات صلة في المواد الدراسية ولم أجد ترشيحات خارجية.",
                 "sources": []
             }
         
         full_context = "\n\n" + "\n\n---\n\n".join(context_parts)
         
-        # 4. Generate answer with history
-        answer = self.generator.generate_answer(question, full_context, is_youtube=bool(youtube_transcript), history=history)
+        # 6. Generate answer with history
+        answer = self.generator.generate_answer(
+            question, 
+            full_context, 
+            is_youtube=bool(youtube_transcript), 
+            history=history,
+            recommendations=recommendation_data
+        )
         
         # Prepare sources for UI
         sources = []

@@ -29,6 +29,38 @@ QUESTION_TYPE_INSTRUCTIONS = {
     "true_false": {
         "en": "State whether the statement is True or False, followed by a brief explanation.",
         "ar": "اذكر ما إذا كانت العبارة صحيحة أم خاطئة، متبوعاً بشرح موجز."
+    },
+    "code": {
+        "en": """You are a technical mentor and programming expert. 
+If the student asks to write, implement, or provide code:
+- Provide the complete, functional, and well-commented code implementation first.
+- Then, provide a structured analysis including the sections below.
+
+If the student provides code to be analyzed:
+- Provide a structured response including:
+1. High-level Overview: What does this code do in simple terms?
+2. Step-by-Step Walkthrough: How does it execute?
+3. Variables & Functions: Explain the key components.
+4. Control Flow: Identify loops, conditionals, or recursion.
+5. Complexity Analysis: Estimate Time and Space complexity.
+6. Edge Cases & Potential Issues: What could go wrong?
+7. Improvements: Suggest optimizations or better practices.
+If the code has errors, point them out clearly.""",
+        "ar": """أنت معلم تقني وخبير برمجة.
+إذا طلب الطالب كتابة أو تنفيذ أو تقديم كود:
+- قدم الكود البرمجي الكامل والوظيفي والمشروح جيداً أولاً.
+- ثم قدم تحليلاً منظماً يتضمن الأقسام المذكورة أدناه.
+
+إذا قدم الطالب كوداً للتحليل:
+- قدم استجابة منظمة تشمل:
+1. نظرة عامة: ماذا يفعل هذا الكود بلمحة سريعة؟
+2. شرح خطوة بخطوة: كيف يتم التنفيذ؟
+3. المتغيرات والدوال: شرح المكونات الرئيسية.
+4. تدفق التحكم: تحديد الحلقات (loops)، الشروط، أو التكرار (recursion).
+5. تحليل التعقيد: تقدير التعقيد الزمني والمكاني (Complexity analysis).
+6. الحالات الحادة والمشاكل المحتملة: ما الذي قد يفشل؟
+7. التحسينات: اقتراح تحسينات أو أفضل الممارسات.
+إذا كان الكود يحتوي على أخطاء، وضحها بوضوح."""
     }
 }
 
@@ -47,7 +79,7 @@ class Generator:
             print("DEBUG: Ollama library NOT available")
             self.client = None
 
-    def generate_answer(self, question: str, context: str, question_type: str = None, is_youtube: bool = False, history: list = None) -> str:
+    def generate_answer(self, question: str, context: str, question_type: str = None, is_youtube: bool = False, history: list = None, recommendations: dict = None) -> str:
         """Generate answer from context using Ollama or simple extraction."""
         
         # Auto-detect question type if not provided
@@ -57,7 +89,7 @@ class Generator:
         # Check if Ollama should be used and is available
         if USE_OLLAMA and OLLAMA_AVAILABLE:
             try:
-                return self._generate_with_ollama(question, context, question_type, is_youtube, history)
+                return self._generate_with_ollama(question, context, question_type, is_youtube, history, recommendations)
             except Exception as e:
                 logger.error(f"Ollama generation failed: {e}")
                 logger.info("Falling back to simple context display")
@@ -87,10 +119,18 @@ class Generator:
            any(keyword in question_lower for keyword in ["complete", "fill in", "اكمل", "أكمل"]):
             return "fill_blank"
             
-        # 4. Default to Explain
+        # 4. Check for Code
+        code_keywords = [
+            "code", "function", "variable", "class", "loop", "algorithm", "complexity", 
+            "syntax", "debug", "refactor", "كود", "دالة", "متغير", "خوارزمية"
+        ]
+        if "```" in question or any(keyword in question_lower for keyword in code_keywords):
+            return "code"
+            
+        # 5. Default to Explain
         return "explain"
 
-    def _generate_with_ollama(self, question: str, context: str, question_type: str, is_youtube: bool, history: list = None) -> str:
+    def _generate_with_ollama(self, question: str, context: str, question_type: str, is_youtube: bool, history: list = None, recommendations: dict = None) -> str:
         """Generate answer using Ollama local LLM with language detection and history."""
         
         # Detect if question contains Arabic characters
@@ -108,39 +148,70 @@ class Generator:
                 role = "User" if turn['role'] == 'user' else "Assistant"
                 history_text += f"{role}: {turn['content']}\n"
             history_text += "---\n"
+        
+        # Format recommendations if available
+        rec_text = ""
+        if recommendations and recommendations.get('youtube'):
+            rec_text = "\n\n[RECOMMENDED_RESOURCES]\n"
+            rec_text += "YouTube Courses & Videos:\n"
+            for rec in recommendations['youtube']:
+                rec_text += f"- {rec['title']} ({rec['duration']}): {rec['link']}\n"
+            rec_text += "---\n"
 
         if has_arabic:
-            prompt = f"""أنت مساعد تعليمي ذكي. سأزودك بمحتوى مقسم حسب المصدر أدناه. {history_text}
+            prompt = f"""أنت مساعد تعليمي ذكي وخبير في البرمجة. سأزودك بمحتوى مقسم حسب المصدر أدناه (إذا وجد). {history_text} {rec_text}
 تعليمات هامة جداً:
-1. إذا سأل الطالب عن معلومة وقدم رابط فيديو، ابحث أولاً في [SOURCE: YOUTUBE_VIDEO_TRANSCRIPT].
-2. إذا وجدت الإجابة في الفيديو، اذكرها واستخدم الطوابع الزمنية الموجودة (مثلاً [HH:MM:SS]).
-3. إذا لم تجد الإجابة في الفيديو ولكنها موجودة في [SOURCE: OFFICIAL_COURSE_MATERIALS]، قدم الإجابة وابدأ جملتك بـ: "هذه المعلومة غير مذكورة في الفيديو، ولكن بناءً على المواد الدراسية..."
-4. إذا لم تجد الإجابة في أي من المصادر، قل فقط: "الإجابة غير موجودة في المحتوى المقدم." ولا تحاول الإجابة من معلوماتك الخارجية.
-5. لا تعتمد على الأسئلة أو التمارين كمصدر للتعريفات.
-6. استخدم تاريخ المحادثة (History) أعلاه إذا كان الطالب يطرح أسئلة متابعة (مثل "ماذا أيضاً؟" أو "اشرح ذلك").
+1. إذا كان السؤال عن الكود، يجب عليك التصرف كمعلم تقني واستخدام معرفتك العميقة بالبرمجة لشرح الكود خطوة بخطوة.
+2. إذا سأل الطالب عن معلومة وقدم رابط فيديو، ابحث أولاً في [SOURCE: YOUTUBE_VIDEO_TRANSCRIPT].
+3. إذا وجدت الإجابة في الفيديو، اذكرها واستخدم الطوابع الزمنية الموجودة (مثلاً [HH:MM:SS]).
+4. إذا لم تجد الإجابة في الفيديو ولكنها موجودة في [SOURCE: OFFICIAL_COURSE_MATERIALS]، قدم الإجابة.
+5. في حالة الأسئلة التي تطلب "ترشيحات" أو "كورسات" (Recommendations)، يجب عليك فوراً وبشكل أساسي استخدام البيانات الموجودة في [RECOMMENDED_RESOURCES] وعرضها كروابط يوتيوب مباشرة.
+6. لا تبحث في محتوى الدروس ([SOURCE: OFFICIAL_COURSE_MATERIALS]) عن ترشيحات عامة إذا كان الطالب يطلب مصادر خارجية؛ استخدم فقط [RECOMMENDED_RESOURCES].
+7. ممنوع تماماً تقديم أي روابط بحث عامة أو روابط لمواقع أخرى غير اليوتيوب المزوّدة في [RECOMMENDED_RESOURCES].
+8. الإجابة يجب أن تبدأ بترشيحات اليوتيوب بشكل واضح جداً (العنوان، المدة، والرابط).
+9. لا تتجاهل روابط اليوتيوب أبداً إذا كانت متوفرة.
+10. الإجابة يجب أن تكون منسقة ومنظمة بشكل جيد (استخدم النقاط، العناوين الفرعية، والجداول إذا لزم الأمر).
+11. التحذير النهائي: إذا وجدت "لا توجد ترشيحات متوفرة حالياً" أو كانت القائمة فارغة، **ممنوع نهائياً** اقتراح أي كورسات أو قنوات من معرفتك الخاصة. في هذه الحالة قل فقط: "عذراً، لم أجد روابط يوتيوب مناسبة حالياً."
 
-تعليمات نوع السؤال: {instruction}
+تعليمات خاصة:
+{instruction}
 
 المحتوى المقدم:
-{context}
+{context if context.strip() else "لا يوجد محتوى إضافي من المصادر."}
+
+[RECOMMENDED_RESOURCES]
+{rec_text if rec_text else "لا توجد ترشيحات متوفرة حالياً."}
 
 سؤال الطالب: {question}
 
 الإجابة:"""
         else:
-            prompt = f"""You are a helpful teaching assistant. I will provide you with content separated by source below. {history_text}
+            prompt = f"""You are a helpful teaching assistant and an experienced programming mentor. I will provide you with content separated by source below (if available). {history_text}
 IMPORTANT INSTRUCTIONS:
-1. If the student provides a link/video, attempt to answer from [SOURCE: YOUTUBE_VIDEO_TRANSCRIPT] first.
-2. If the answer is found in the video, include it and use the provided timestamps (e.g., [HH:MM:SS]) for citation.
-3. If the answer is NOT in the video transcript but IS present in [SOURCE: OFFICIAL_COURSE_MATERIALS], provide the answer but explicitly start with: "This information was not mentioned in the video, but according to the course materials..."
-4. If the answer is missing from BOTH sources, respond strictly with: "The answer is not available in the provided material."
-5. Do NOT use outside knowledge. Do NOT use assessment questions as sources for theory.
-6. Use the [CONVERSATION_HISTORY] provided above to understand follow-up questions or references (like "What about...?" or "Tell me more").
+1. If the question is code-related, act as a technical mentor and use your deep programming knowledge to explain the code thoroughly.
+2. If the student provides a link/video, attempt to answer from [SOURCE: YOUTUBE_VIDEO_TRANSCRIPT] first.
+3. If the answer is found in the video, include it and use the provided timestamps (e.g., [HH:MM:SS]) for citation.
+4. If the answer is NOT in the video transcript but IS present in [SOURCE: OFFICIAL_COURSE_MATERIALS], provide the answer.
+5. If the student asks for "recommendations", "courses", or "resources", you MUST use the data provided in [RECOMMENDED_RESOURCES] immediately and present them as direct YouTube links.
+6. DO NOT search through [SOURCE: OFFICIAL_COURSE_MATERIALS] for general recommendations if the student is asking for learning resources; use only the provided [RECOMMENDED_RESOURCES] section.
+7. Show the YouTube videos with their Title, Duration, and clickable direct Links.
+8. DO NOT provide general search links or mention other platforms. Only show the YouTube videos listed in [RECOMMENDED_RESOURCES].
+9. NEVER ignore the provided YouTube links if they are available.
+10. For code-related queries, you ARE allowed to use your general programming knowledge to explain syntax, complexity, and best practices. For general theory questions, stick to the provided materials.
+11. If the answer is missing from BOTH sources and the question is NOT code-related and NOT a request for recommendations, respond strictly with: "The answer is not available in the provided material."
+12. Use the [CONVERSATION_HISTORY] provided above to understand follow-up questions or references.
+13. Ensure the response is well-formatted using markdown (bullet points, subheadings, etc.).
 
-Question Type Instructions: {instruction}
+Special Instructions:
+{instruction}
 
 Provided Content:
-{context}
+{context if context.strip() else "No additional context from sources."}
+
+[RECOMMENDED_RESOURCES]
+{rec_text if rec_text else "No specific recommendations found currently."}
+
+FINAL WARNING: If you see "No specific recommendations found currently." or if the list is empty, DO NOT suggest any channels, courses, OR links from your own knowledge. Say: "I'm sorry, I couldn't find any specific YouTube recommendations for this topic at the moment."
 
 Student Question: {question}
 

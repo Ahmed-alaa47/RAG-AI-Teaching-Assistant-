@@ -1,5 +1,5 @@
 from src.rag_pipeline import RAGPipeline
-from utils.helpers import format_sources, print_divider
+from utils.helpers import format_sources, print_divider, fix_arabic_text
 from config.settings import RAW_DATA_DIR
 import logging
 
@@ -11,7 +11,7 @@ def main():
     """Main function to run the RAG chatbot."""
     print("=" * 60)
     print("Course Material AI Assistant")
-    print("مساعد المواد الدراسية الذكي")
+    print(fix_arabic_text("مساعد المواد الدراسية الذكي"))
     print("=" * 60)
     
     # Initialize RAG pipeline
@@ -50,7 +50,7 @@ def main():
     
     print("\n" + "=" * 60)
     print("You can now ask questions about your course materials or provide a YouTube URL!")
-    print("يمكنك الآن طرح أسئلة حول موادك الدراسية أو تزويدنا برابط يوتيوب!")
+    print(fix_arabic_text("يمكنك الآن طرح أسئلة حول موادك الدراسية أو تزويدنا برابط يوتيوب!"))
     print("Type 'quit' or 'exit' to stop")
     print("=" * 60 + "\n")
     
@@ -62,7 +62,7 @@ def main():
             
             if question.lower() in ['quit', 'exit', 'q']:
                 print("\nThank you for using the Course Material AI Assistant!")
-                print("شكراً لاستخدامك مساعد المواد الدراسية!")
+                print(fix_arabic_text("شكراً لاستخدامك مساعد المواد الدراسية!"))
                 break
             
             if not question:
@@ -76,7 +76,7 @@ def main():
             
             # Display answer
             print("📖 Answer:")
-            print(result['answer'])
+            print(fix_arabic_text(result['answer']))
             
             # Update history (keep last 5 interactions to prevent prompt bloat)
             history.append({"role": "user", "content": question})
@@ -87,13 +87,13 @@ def main():
             
             # Display sources
             if result['sources']:
-                print(format_sources(result['sources']))
+                print(fix_arabic_text(format_sources(result['sources'])))
             
             print_divider()
         
         except KeyboardInterrupt:
             print("\n\nThank you for using the Course Material AI Assistant!")
-            print("شكراً لاستخدامك مساعد المواد الدراسية!")
+            print(fix_arabic_text("شكراً لاستخدامك مساعد المواد الدراسية!"))
             break
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}")

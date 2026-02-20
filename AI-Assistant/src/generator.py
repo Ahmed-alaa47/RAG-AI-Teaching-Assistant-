@@ -224,4 +224,60 @@ Answer:"""
             )
             return response['response']
         except Exception as e:
-            raise Exception(f"Ollama error: {e}. Make sure Ollama is installed and '{self.model}' model is downloaded.")
+            logger.error(f"Ollama generation failed in _generate_with_ollama: {e}")
+            return "Error: Failed to generate a response using the local model."
+
+    def get_presentation_structure(self, content: str, title: str = "Presentation") -> list:
+        """
+        Uses the LLM to structure content into a list of slides for a presentation.
+        Returns a list of dictionaries: [{"title": "...", "content": ["...", "..."]}, ...]
+        """
+        if not USE_OLLAMA or not OLLAMA_AVAILABLE:
+            # Fallback: Just create a single slide with the content
+            return [{"title": title, "content": [content[:500] + "..."]}]
+
+        prompt = f"""You are a presentation expert. Structure the following content into a sequence of professional PowerPoint slides.
+Each slide must have:
+1. 'title': A short, engaging title.
+2. 'content': A list of 3-5 concise bullet points.
+
+Return ONLY a valid JSON array of objects. Do not include any other text or explanation.
+
+[FORMAT EXAMPLE]
+[
+  {{
+    "title": "Introduction to AI", 
+    "content": ["Definition of AI", "Brief history", "Core components"]
+  }},
+  {{
+    "title": "Machine Learning", 
+    "content": ["Types of ML", "Supervised learning", "Unsupervised learning"]
+  }}
+]
+
+[CONTENT TO STRUCTURE]
+{content}
+
+JSON Response:"""
+
+        try:
+            response = self.client.generate(
+                model=self.model,
+                prompt=prompt
+            )
+            text_response = response['response'].strip()
+            
+            # Debug tracking
+            logger.info(f"LLM Structure Response: {text_response[:500]}...")
+            
+            # Extract JSON if LLM included extra text
+            import json
+            import re
+            json_match = re.search(r'\[\s*{.*}\s*\]', text_response, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group(0))
+            else:
+                return json.loads(text_response)
+        except Exception as e:
+            logger.error(f"Failed to structure presentation: {e}")
+            return [{"title": title, "content": ["Error structuring content into slides."]}]

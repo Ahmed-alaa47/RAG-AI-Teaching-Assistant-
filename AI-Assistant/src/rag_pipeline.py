@@ -5,6 +5,7 @@ from src.retriever import Retriever
 from src.generator import Generator
 from src.youtube_processor import YouTubeProcessor
 from src.recommender import RecommendationEngine
+from src.presentation_maker import PresentationMaker
 from config.settings import RAW_DATA_DIR
 import logging
 import os
@@ -22,6 +23,7 @@ class RAGPipeline:
         self.generator = Generator()
         self.youtube_processor = YouTubeProcessor()
         self.recommender = RecommendationEngine()
+        self.presentation_maker = PresentationMaker()
         self.is_initialized = False
     
     def initialize(self, data_path: str = None):
@@ -85,12 +87,48 @@ class RAGPipeline:
         
         logger.info(f"Processing query: {question}")
         
+        # 0. Intent Detection & Query Cleaning
+        question_lower = question.lower()
+        presentation_keywords = [
+            "presentation", "slides", "powerpoint", "pptx", "make a presentation",
+            "عرض تقديمي", "شرائح", "بوربوينت", "اعمل عرض", "سوي بريزنتيشن"
+        ]
+        recommendation_keywords = [
+            "recommend", "course", "resource", "learn", "article", "youtube", 
+            "مقترح", "ترشيح", "تعلم", "كورس", "دورة", "شرح", "مصادر", "فيديو",
+            "مواد", "فيديوهات", "قناة"
+        ]
+        
+        is_presentation = any(keyword in question_lower for keyword in presentation_keywords)
+        is_recommendation = any(keyword in question_lower for keyword in recommendation_keywords)
+        
+        # Clean query for retrieval/search
+        search_query = question_lower
+        filler_phrases = presentation_keywords + recommendation_keywords + [
+            "can you", "i want to learn", "give me", "article about", "about", 
+            "some", "best", "please", "based on the course materials", "based on",
+            "from the materials", "رشح", "ممكن", "عايز", "اتعلم", "عن", "افضل", "أفضل", "لي", "اعطني"
+        ]
+        for phrase in filler_phrases:
+            search_query = search_query.replace(phrase, "")
+        
+        # Clean redundant spacing and punctuation
+        search_query = " ".join(search_query.split())
+        search_query = search_query.strip(" ?!.،؟")
+        
+        # Fallback to full question if cleaning stripped everything
+        if not search_query or len(search_query) < 2:
+            search_query = question
+            
+        logger.info(f"Cleaned search query for retrieval: '{search_query}'")
+
         # 1. Fetch YouTube transcript if a URL is provided
         youtube_transcript = self.youtube_processor.process_url(question)
         
         # 2. Standard RAG process (Course Materials)
         try:
-            raw_documents = self.retriever.retrieve(question)
+            # Use the cleaned search_query for much better retrieval
+            raw_documents = self.retriever.retrieve(search_query)
             logger.info(f"Retrieved {len(raw_documents)} raw documents")
             
             # Filter out assessment/question-based documents
@@ -125,61 +163,76 @@ class RAGPipeline:
             course_text = "\n\n".join([doc.page_content for doc in documents])
             context_parts.append("[SOURCE: OFFICIAL_COURSE_MATERIALS]\n" + course_text)
         
-        # 4. Check for Recommendation intent
-        recommendation_data = None
-        recommendation_keywords = [
-            "recommend", "course", "resource", "learn", "article", "youtube", 
-            "مقترح", "ترشيح", "تعلم", "كورس", "دورة", "شرح", "مصادر", "فيديو",
-            "مواد", "فيديوهات", "قناة"
-        ]
+        full_context = "\n\n" + "\n\n---\n\n".join(context_parts) if context_parts else ""
         
-        question_lower = question.lower()
-        if any(keyword in question_lower for keyword in recommendation_keywords):
+        # 4. Handle Recommendation intent
+        recommendation_data = None
+        if is_recommendation:
             logger.info("Recommendation intent detected, fetching additional resources...")
-            
-            # Better topic extraction: Remove common stop phrases
-            topic = question_lower
-            stop_phrases = [
-                "recommend", "can you", "i want to learn", "give me", 
-                "courses for", "articles about", "about", "some", "best", "please",
-                "رشح", "ممكن", "عايز", "اتعلم", "كورس", "دورة", "عن", "افضل", "أفضل", "لي", "اعطني"
-            ]
-            
-            # Additional personal pronouns and fillers to remove
-            top_fillers = ["me", "give", "find", "some", "good", "great", "excellent"]
-            for filler in top_fillers:
-                topic = topic.replace(f" {filler} ", " ")
-                if topic.startswith(f"{filler} "):
-                    topic = topic[len(filler)+1:]
-                if topic.endswith(f" {filler}"):
-                    topic = topic[:-len(filler)-1]
-            
-            for phrase in stop_phrases:
-                topic = topic.replace(phrase, "")
-            
-            # Final cleaning of redundant spacing and punctuation
-            topic = " ".join(topic.split())
-            topic = topic.strip(" ?!.،؟")
-            
-            # Final fallback if topic is empty or too short
-            search_query = topic if len(topic) > 2 else question
-            logger.info(f"Final search query for YouTube: '{search_query}'")
             recommendation_data = self.recommender.get_all_recommendations(search_query)
             
             yt_count = len(recommendation_data.get('youtube', []))
             logger.info(f"Found {yt_count} YouTube recommendations")
 
+        # 4.5 Handle Presentation intent
+        if is_presentation:
+            logger.info("Presentation intent detected...")
+            
+            # Combine available context to use as source for slides
+            slide_source_content = full_context if full_context else question
+            
+            # Get structured slides from LLM
+            logger.info("Structuring slides using LLM...")
+            slides_data = self.generator.get_presentation_structure(slide_source_content)
+            
+            # Scan for local 'uploaded' images
+            image_dir = os.path.join("data", "presentation_images")
+            local_images = []
+            if os.path.exists(image_dir):
+                # Get common image extensions
+                extensions = ('.png', '.jpg', '.jpeg', '.webp')
+                local_images = [
+                    os.path.join(image_dir, f) for f in os.listdir(image_dir)
+                    if f.lower().endswith(extensions)
+                ]
+                local_images.sort() # Ensure consistent order
+                logger.info(f"Found {len(local_images)} local images for the presentation")
+            
+            # Create the presentation with local images
+            filename = "generated_presentation.pptx"
+            pptx_path = self.presentation_maker.create_presentation(slides_data, local_images, filename)
+            
+            # Detect language for the message
+            has_arabic = any('\u0600' <= char <= '\u06FF' for char in question)
+            
+            if pptx_path:
+                if has_arabic:
+                    msg = f"لقد قمت بإنشاء العرض التقديمي لك. يمكنك العثور عليه هنا: {pptx_path}"
+                else:
+                    msg = f"I have created a presentation for you. You can find it here: {pptx_path}"
+                return {
+                    "answer": msg,
+                    "sources": [],
+                    "presentation_path": pptx_path
+                }
+            else:
+                if has_arabic:
+                    msg = "حاولت إنشاء عرض تقديمي ولكن حدث خطأ ما أثناء إنشاء الملف."
+                else:
+                    msg = "I tried to create a presentation but something went wrong during the file generation."
+                return {
+                    "answer": msg,
+                    "sources": []
+                }
+
         # 5. Handle empty context return - only if NO recommendations either
         if not context_parts and not recommendation_data:
             return {
-                "answer": "I couldn't find any relevant information in the video or course materials, and no recommendations were found.",
-                "sources": []
-            } or {
-                "answer": "لم أتمكن من العثور على معلومات ذات صلة في المواد الدراسية ولم أجد ترشيحات خارجية.",
+                "answer": "لم أتمكن من العثور على معلومات ذات صلة في المواد الدراسية ولم أجد ترشيحات خارجية." if has_arabic else "I couldn't find any relevant information in the video or course materials, and no recommendations were found.",
                 "sources": []
             }
         
-        full_context = "\n\n" + "\n\n---\n\n".join(context_parts)
+        # full_context already defined above
         
         # 6. Generate answer with history
         answer = self.generator.generate_answer(

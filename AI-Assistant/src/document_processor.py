@@ -156,9 +156,15 @@ class DocumentProcessor:
             return []
 
     def split_documents(self, documents: List[Document]) -> List[Document]:
-        """Split documents into smaller chunks."""
+        """Split documents into smaller chunks and prepend filename for context."""
         chunks = self.text_splitter.split_documents(documents)
-        logger.info(f"Split into {len(chunks)} chunks")
+        
+        # Prepend filename to each chunk's content for better context and retrieval
+        for chunk in chunks:
+            file_name = chunk.metadata.get("file_name", "Unknown Source")
+            chunk.page_content = f"[Source File: {file_name}]\n{chunk.page_content}"
+            
+        logger.info(f"Split into {len(chunks)} chunks with filename headers")
         return chunks
 
     def _enrich_metadata(self, documents: List[Document], path: Path):

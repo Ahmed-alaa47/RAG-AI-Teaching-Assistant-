@@ -9,6 +9,7 @@ from src.presentation_maker import PresentationMaker
 from config.settings import RAW_DATA_DIR
 import logging
 import os
+import re
 
 # logging.basicConfig(level=logging.INFO)  # Removed central logging config
 logger = logging.getLogger(__name__)
@@ -94,20 +95,23 @@ class RAGPipeline:
             "عرض تقديمي", "شرائح", "بوربوينت", "اعمل عرض", "سوي بريزنتيشن"
         ]
         recommendation_keywords = [
-            "recommend", "course", "resource", "learn", "article", "youtube", 
-            "مقترح", "ترشيح", "تعلم", "كورس", "دورة", "شرح", "مصادر", "فيديو",
-            "مواد", "فيديوهات", "قناة"
+            "recommend", "suggest", "more resources", "other courses", "another video",
+            "مقترح", "ترشيح", "مصادر أخرى", "كورس آخر", "نرشح", "زيدني"
         ]
         
         is_presentation = any(keyword in question_lower for keyword in presentation_keywords)
         is_recommendation = any(keyword in question_lower for keyword in recommendation_keywords)
         
+        # Strip YouTube URLs from the search query to prevent accidental recommendation triggers
+        url_pattern = r'https?://(?:www\.)?youtube\.com/watch\?v=[0-9A-Za-z_-]{11}|https?://youtu\.be/[0-9A-Za-z_-]{11}'
+        search_query = re.sub(url_pattern, '', question_lower)
+        
         # Clean query for retrieval/search
-        search_query = question_lower
         filler_phrases = presentation_keywords + recommendation_keywords + [
             "can you", "i want to learn", "give me", "article about", "about", 
             "some", "best", "please", "based on the course materials", "based on",
-            "from the materials", "رشح", "ممكن", "عايز", "اتعلم", "عن", "افضل", "أفضل", "لي", "اعطني"
+            "from the materials", "summarize", "explain", "تلخيص", "شرح", "وضوح",
+            "رشح", "ممكن", "عايز", "اتعلم", "عن", "افضل", "أفضل", "لي", "اعطني"
         ]
         for phrase in filler_phrases:
             search_query = search_query.replace(phrase, "")
@@ -116,14 +120,21 @@ class RAGPipeline:
         search_query = " ".join(search_query.split())
         search_query = search_query.strip(" ?!.،؟")
         
-        # Fallback to full question if cleaning stripped everything
+        # Fallback to full question (with URL stripped) if cleaning stripped everything
         if not search_query or len(search_query) < 2:
-            search_query = question
+            search_query = re.sub(url_pattern, '', question).strip()
+            if not search_query: search_query = "general"
             
         logger.info(f"Cleaned search query for retrieval: '{search_query}'")
 
         # 1. Fetch YouTube transcript if a URL is provided
-        youtube_transcript = self.youtube_processor.process_url(question)
+        youtube_data = self.youtube_processor.process_url(question)
+        youtube_transcript = youtube_data.get("transcript") if youtube_data else None
+        video_meta = {
+            "title": youtube_data.get("title"),
+            "duration": youtube_data.get("duration"),
+            "video_id": youtube_data.get("video_id")
+        } if youtube_data else None
         
         # 2. Standard RAG process (Course Materials)
         try:
@@ -156,8 +167,18 @@ class RAGPipeline:
         # 3. Create structured hybrid context
         context_parts = []
         
-        if youtube_transcript:
-            context_parts.append("[SOURCE: YOUTUBE_VIDEO_TRANSCRIPT]\n" + youtube_transcript)
+        if youtube_data:
+            meta_header = f"[VIDEO_TITLE: {video_meta['title']}]\n[VIDEO_DURATION: {video_meta['duration']}]\n"
+            raw_transcript = youtube_data.get("transcript")
+            
+            if raw_transcript and "[ERROR:" not in str(raw_transcript):
+                content = raw_transcript
+            elif raw_transcript and "[ERROR:" in str(raw_transcript):
+                content = f"[Transcription Blocked: {raw_transcript}]"
+            else:
+                content = "[No Transcript Available. Suggest installing ffmpeg for local transcription.]"
+            
+            context_parts.append("[SOURCE: YOUTUBE_VIDEO_TRANSCRIPT]\n" + meta_header + content)
         
         if documents:
             course_text = "\n\n".join([doc.page_content for doc in documents])
@@ -165,14 +186,20 @@ class RAGPipeline:
         
         full_context = "\n\n" + "\n\n---\n\n".join(context_parts) if context_parts else ""
         
-        # 4. Handle Recommendation intent
         recommendation_data = None
         if is_recommendation:
             logger.info("Recommendation intent detected, fetching additional resources...")
-            recommendation_data = self.recommender.get_all_recommendations(search_query)
+            
+            # Smarter recommendation query: If cleaning left us with nothing, use the video title
+            rec_query = search_query
+            if (not rec_query or rec_query == "general") and video_meta and video_meta['title'] != "Unknown Title":
+                rec_query = video_meta['title']
+                logger.info(f"Using video title for recommendations: '{rec_query}'")
+            
+            recommendation_data = self.recommender.get_all_recommendations(rec_query)
             
             yt_count = len(recommendation_data.get('youtube', []))
-            logger.info(f"Found {yt_count} YouTube recommendations")
+            logger.info(f"Found {yt_count} YouTube recommendations for '{rec_query}'")
 
         # 4.5 Handle Presentation intent
         if is_presentation:
@@ -238,15 +265,18 @@ class RAGPipeline:
         answer = self.generator.generate_answer(
             question, 
             full_context, 
-            is_youtube=bool(youtube_transcript), 
+            is_youtube=bool(youtube_data), 
             history=history,
             recommendations=recommendation_data
         )
         
         # Prepare sources for UI
         sources = []
-        if youtube_transcript:
-            sources.append({"content": "Supplementary Video Transcript", "metadata": {"source": "YouTube"}})
+        if youtube_data:
+            sources.append({
+                "content": f"Video: {video_meta['title']} ({video_meta['duration']})", 
+                "metadata": {"source": "YouTube", "video_id": video_meta['video_id']}
+            })
         
         for doc in documents:
             sources.append({

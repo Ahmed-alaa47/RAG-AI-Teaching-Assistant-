@@ -28,6 +28,8 @@ COPY . .
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# Command to run the application
-# We'll use a shell to keep the container running if needed, or run the app directly
-CMD ["python", "AI-Assistant/main.py"]
+# Expose the API port
+EXPOSE 8000
+
+# Run the FastAPI server
+CMD ["python", "-m", "uvicorn", "AI-Assistant.api:app", "--host", "0.0.0.0", "--port", "8000"]

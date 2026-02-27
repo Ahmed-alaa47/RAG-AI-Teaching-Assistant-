@@ -1,4 +1,5 @@
-from typing import Dict
+from typing import Dict, List
+from langchain_core.documents import Document
 from src.document_processor import DocumentProcessor
 from src.vector_store import VectorStoreManager
 from src.retriever import Retriever
@@ -72,7 +73,7 @@ class RAGPipeline:
         self.vector_store_manager.add_documents(chunks)
         logger.info("Documents added successfully!")
     
-    def query(self, question: str, history: list = None) -> Dict:
+    def query(self, question: str, history: list = None, forced_documents: List[Document] = None) -> Dict:
         """Query the RAG system and return answer with sources."""
         if not self.is_initialized:
             logger.info("Pipeline not initialized, loading existing vector store...")
@@ -87,6 +88,9 @@ class RAGPipeline:
                 }
         
         logger.info(f"Processing query: {question}")
+
+        # Detect language early (Arabic vs English)
+        has_arabic = any('\u0600' <= char <= '\u06FF' for char in question)
         
         # 0. Intent Detection & Query Cleaning
         question_lower = question.lower()
@@ -138,9 +142,13 @@ class RAGPipeline:
         
         # 2. Standard RAG process (Course Materials)
         try:
-            # Use the cleaned search_query for much better retrieval
-            raw_documents = self.retriever.retrieve(search_query)
-            logger.info(f"Retrieved {len(raw_documents)} raw documents")
+            if forced_documents:
+                raw_documents = forced_documents
+                logger.info(f"Using {len(raw_documents)} forced documents (skipping retrieval)")
+            else:
+                # Use the cleaned search_query for much better retrieval
+                raw_documents = self.retriever.retrieve(search_query)
+                logger.info(f"Retrieved {len(raw_documents)} raw documents")
             
             # Filter out assessment/question-based documents
             documents = []
@@ -151,6 +159,12 @@ class RAGPipeline:
             ]
             
             for doc in raw_documents:
+                # If these are forced documents (e.g. from an upload), skip assessment filtering
+                # to ensure the user gets an answer even if the file looks like a test.
+                if forced_documents:
+                    documents.append(doc)
+                    continue
+
                 content_lower = doc.page_content.lower()
                 is_assessment = any(keyword in content_lower for keyword in assessment_keywords)
                 
@@ -228,9 +242,6 @@ class RAGPipeline:
             # Create the presentation with local images
             filename = "generated_presentation.pptx"
             pptx_path = self.presentation_maker.create_presentation(slides_data, local_images, filename)
-            
-            # Detect language for the message
-            has_arabic = any('\u0600' <= char <= '\u06FF' for char in question)
             
             if pptx_path:
                 if has_arabic:

@@ -11,8 +11,11 @@ Run locally:
 import os
 import logging
 import shutil
+import time
+import json
 from typing import List
 
+from pydantic import Json
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -31,6 +34,10 @@ from models import (
 # ─── Logging ────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Directory for presentation images
+IMAGE_DIR = os.path.join("data", "presentation_images")
+os.makedirs(IMAGE_DIR, exist_ok=True)
 
 # ─── App Setup ──────────────────────────────────────────────────────
 app = FastAPI(
@@ -210,23 +217,100 @@ async def get_recommendations(request: RecommendationRequest):
 
 # ─── 6. Presentation — Create ─────────────────────────────────────
 @app.post("/presentation/create", response_model=PresentationResponse, tags=["Presentation"])
-async def create_presentation(request: PresentationRequest):
+async def create_presentation(
+    presentation_data: str = Form(..., description="The presentation structure inside a JSON object"),
+    images: List[UploadFile] = File(None, description="Image files to use in the presentation (referenced by index or filename)")
+):
     """
-    Generate a PowerPoint presentation.
-
-    The pipeline will retrieve relevant course materials for the given
-    topic, structure them into slides via the LLM, and create a .pptx file.
+    Generate a PowerPoint presentation with integrated image uploads.
+    
+    The 'presentation_data' field expects a JSON object string.
+    Each slide can reference an image by 'image_index' (logical order) 
+    or 'image_filename' (variable name).
     """
-    # Build a prompt that triggers the presentation intent in the pipeline
-    question = f"Create a presentation about {request.topic}"
-
     try:
-        result = rag.query(question)
+        # 0. Save uploaded images and keep track of them
+        images_by_filename = {}
+        images_by_index = []
+        
+        if images:
+            for image_file in images:
+                save_path = os.path.join(IMAGE_DIR, image_file.filename)
+                with open(save_path, "wb") as f:
+                    content = await image_file.read()
+                    f.write(content)
+                images_by_filename[image_file.filename] = save_path
+                images_by_index.append(save_path)
+                logger.info(f"Saved uploaded image: {image_file.filename}")
+
+        # 1. Parse the JSON data manually for better error reporting
+        try:
+            request = PresentationRequest.model_validate_json(presentation_data)
+        except Exception as e:
+            logger.error(f"Failed to parse presentation JSON: {e}")
+            raise HTTPException(status_code=400, detail=f"Invalid Presentation JSON structure: {str(e)}")
+
+        # --- Mode 1: Manual Structured Input ---
+        if request.slides:
+            logger.info(f"Creating manual presentation: '{request.title}' with {len(request.slides)} slides")
+            
+            slides_data = []
+            final_image_paths = []
+            
+            for slide in request.slides:
+                slides_data.append({
+                    "title": slide.title,
+                    "content": slide.content
+                })
+                
+                # Resolve image using BOTH methods (Index prioritized, then Filename)
+                slide_img_path = None
+                
+                # Method A: Index mapping
+                if slide.image_index is not None:
+                    if 0 <= slide.image_index < len(images_by_index):
+                        slide_img_path = images_by_index[slide.image_index]
+                    else:
+                        logger.warning(f"Index {slide.image_index} out of range for slide '{slide.title}'")
+                
+                # Method B: Filename mapping (if index didn't work)
+                if not slide_img_path and slide.image_filename:
+                    if slide.image_filename in images_by_filename:
+                        slide_img_path = images_by_filename[slide.image_filename]
+                    else:
+                        # Final fallback: Check existing storage
+                        stored_path = os.path.join(IMAGE_DIR, slide.image_filename)
+                        if os.path.exists(stored_path):
+                            slide_img_path = stored_path
+                
+                final_image_paths.append(slide_img_path)
+
+            # Generate PPTX directly
+            pptx_filename = f"{request.title.replace(' ', '_')}_{int(time.time())}.pptx"
+            pptx_path = rag.presentation_maker.create_presentation(
+                slides_data=slides_data,
+                image_paths=final_image_paths,
+                filename=pptx_filename
+            )
+            
+        # --- Mode 2: AI Generated from Topic ---
+        elif request.topic:
+            logger.info(f"Creating AI presentation for topic: '{request.topic}'")
+            question = f"Create a presentation about {request.topic} titled {request.title}"
+            result = rag.query(question)
+            pptx_path = result.get("presentation_path")
+        
+        else:
+            raise HTTPException(status_code=400, detail="Either 'slides' or 'topic' must be provided.")
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Presentation creation failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
-    pptx_path = result.get("presentation_path")
     if pptx_path:
         filename = os.path.basename(pptx_path)
         return PresentationResponse(
@@ -236,10 +320,7 @@ async def create_presentation(request: PresentationRequest):
             download_url=f"/presentation/download/{filename}",
         )
     else:
-        return PresentationResponse(
-            success=False,
-            message=result.get("answer", "Failed to create presentation"),
-        )
+        return PresentationResponse(success=False, message="Failed to generate presentation")
 
 
 # ─── 7. Presentation — Download ───────────────────────────────────
@@ -317,11 +398,32 @@ async def upload_and_ask(
             content = await file.read()
             f.write(content)
 
-        # Index the new document
-        rag.add_documents(save_path)
+        # 1. Process and Index the new document
+        logger.info(f"Indexing new document for immediate Q&A: {file.filename}")
+        chunks = rag.document_processor.process_documents(save_path)
+        
+        if not chunks:
+            logger.warning(f"No text extracted from {file.filename}. OCR might have failed.")
+            return DocumentAskResponse(
+                answer="I couldn't extract any text from this file, so I can't answer questions about its content.",
+                sources=[],
+                filename=file.filename
+            )
+        
+        # Log the first bit of text so the user can verify OCR in the terminal
+        sample_text = chunks[0].page_content[:200].replace("\n", " ")
+        logger.info(f"Extracted text sample: {sample_text}...")
 
-        # Now query the pipeline — the newly indexed content will be retrieved
-        result = rag.query(question)
+        # Add to vector store
+        rag.vector_store_manager.add_documents(chunks)
+
+        # 2. Query the pipeline
+        # We pass the extracted chunks as 'forced_documents'. 
+        # This bypasses the general vector search and ensures the AI 
+        # answers ONLY using the content of the file just uploaded.
+        logger.info(f"Querying with forced context from {file.filename}")
+        
+        result = rag.query(question, forced_documents=chunks)
 
         return DocumentAskResponse(
             answer=result["answer"],
@@ -334,9 +436,6 @@ async def upload_and_ask(
 
 
 # ─── 9. Upload Presentation Images ────────────────────────────────
-IMAGE_DIR = os.path.join("data", "presentation_images")
-os.makedirs(IMAGE_DIR, exist_ok=True)
-
 ALLOWED_IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"]
 
 

@@ -1,7 +1,7 @@
 """
 Pydantic request/response models for the AI Teaching Assistant API.
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, Json
 from typing import List, Dict, Optional, Any
 
 
@@ -68,9 +68,17 @@ class RecommendationResponse(BaseModel):
 
 
 # ─── Presentation ──────────────────────────────────────────────────
+class SlideModel(BaseModel):
+    title: str = Field(..., description="Slide title")
+    content: List[str] = Field(..., description="List of bullet points for the slide")
+    image_index: Optional[int] = Field(default=None, description="Index of image in uploaded list (0-based)")
+    image_filename: Optional[str] = Field(default=None, description="Filename of image from uploaded list")
+
+
 class PresentationRequest(BaseModel):
-    topic: str = Field(..., description="Topic or content for the presentation")
-    title: Optional[str] = Field(default="Presentation", description="Title for the presentation")
+    title: str = Field(..., description="Main title for the presentation")
+    topic: Optional[str] = Field(default=None, description="Topic for AI-generated presentation (if slides not provided)")
+    slides: Optional[List[SlideModel]] = Field(default=None, description="Static slides provided by the user (bypasses AI generation)")
 
 
 class PresentationResponse(BaseModel):

@@ -19,7 +19,7 @@ A powerful **RAG-based** (Retrieval-Augmented Generation) AI teaching assistant 
 - **Local AI** — Runs 100% locally using [Ollama](https://ollama.com/) (LLaMA 3.1 8B), ensuring data privacy and zero API costs.
 - **OCR** — Tesseract-based text extraction from scanned PDFs and standalone images (supports Arabic + English).
 - **Smart Filtering** — Automatically filters out assessment-style content (MCQs) to provide cleaner context.
-- **REST API** — Full FastAPI server with Swagger docs for front-end integration.
+- **REST API** — Full Django Rest Framework (DRF) server for seamless front-end integration.
 
 ---
 
@@ -68,7 +68,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> **Note:** This will install PyTorch (CPU version), sentence-transformers, FastAPI, and all other dependencies. The first run will also download the embedding model (~130MB).
+> **Note:** This will install PyTorch (CPU version), sentence-transformers, Django, Django REST Framework, and all other dependencies. The first run will also download the embedding model (~130MB).
 
 ### 4. Install & Start Ollama
 
@@ -117,13 +117,13 @@ AI-Assistant/
 
 ```bash
 cd AI-Assistant
-python -m uvicorn api:app --host 0.0.0.0 --port 8000 --reload
+python manage.py runserver 0.0.0.0:8000
 ```
 
 The server will:
 1. Automatically load the existing vector store on startup (if available).
 2. Serve the API at **http://localhost:8000**
-3. Provide interactive Swagger docs at **http://localhost:8000/docs**
+3. Provide a Browsable API at the endpoint URLs (if accessed via browser)
 
 > **First time?** After starting the server, call `POST /initialize` to process your course materials and build the vector store. This only needs to be done once (or when you add new files).
 
@@ -216,7 +216,9 @@ docker run -p 8000:8000 -e OLLAMA_BASE_URL=http://host.docker.internal:11434 rag
 ```
 RAG-AI-Teaching-Assistant-/
 ├── AI-Assistant/
-│   ├── api.py                    # FastAPI REST API server
+│   ├── manage.py                 # Django management script
+│   ├── config_proj/              # Django site configuration
+│   ├── api_app/                  # Django REST API application
 │   ├── models.py                 # Pydantic request/response schemas
 │   ├── main.py                   # CLI entry point
 │   ├── config/
@@ -289,4 +291,4 @@ curl -X POST http://localhost:8000/chat \
   -d '{"question": "Recommend me courses about data structures"}'
 ```
 
-Or open **http://localhost:8000/docs** for the interactive Swagger UI.
+Or open the endpoints in your browser to view the DRF browsable API.

@@ -31,5 +31,5 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # Expose the API port
 EXPOSE 8000
 
-# Run the FastAPI server
-CMD ["python", "-m", "uvicorn", "AI-Assistant.api:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the Django server
+CMD ["python", "AI-Assistant/manage.py", "runserver", "0.0.0.0:8000"]

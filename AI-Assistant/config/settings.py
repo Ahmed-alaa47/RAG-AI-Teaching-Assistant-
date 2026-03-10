@@ -1,5 +1,10 @@
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+#Load environment variables from .env file
+from pathlib import Path
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 # Project paths
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -29,9 +34,11 @@ ENABLE_OCR = True  # Extract text from images in PDFs using OCR
 TOP_K_RESULTS = 4  # Increased for better context coverage
 SIMILARITY_THRESHOLD = 0.0  # No threshold - retrieve all TOP_K results
 
-# LLM settings
-USE_OLLAMA = True  # Set to False to use simple context display
-OLLAMA_MODEL = "llama3.1:8b"  # Match user's local model tag
+# LLM settings - Groq API
+USE_GROQ = True  # Changed from USE_OLLAMA
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL = "llama-3.3-70b-versatile"  # Llama 3.3 70B model
+
 # Use host.docker.internal as default if running inside Docker and no URL is provided
 default_url = "http://host.docker.internal:11434" if os.path.exists('/.dockerenv') else "http://localhost:11434"
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", default_url)

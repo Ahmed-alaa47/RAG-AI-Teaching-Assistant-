@@ -1,17 +1,19 @@
 from typing import Dict, Optional
 import logging
-from config.settings import USE_OLLAMA, OLLAMA_MODEL, OLLAMA_BASE_URL
+import re
+import json
+from config.settings import USE_GROQ, GROQ_API_KEY, GROQ_MODEL
 
-# Basic logging setup for this module (if needed, or rely on root logger)
 logger = logging.getLogger(__name__)
 
-# Try to import Ollama
+# Try to import Groq
 try:
-    import ollama
-    OLLAMA_AVAILABLE = True
+    from groq import Groq
+    GROQ_AVAILABLE = True
 except ImportError:
-    OLLAMA_AVAILABLE = False
-    logger.warning("Ollama not installed. Install with: pip install ollama")
+    GROQ_AVAILABLE = False
+    logger.warning("Groq not installed. Install with: pip install groq")
+
 
 QUESTION_TYPE_INSTRUCTIONS = {
     "mcq": {
@@ -64,179 +66,64 @@ If the code has errors, point them out clearly.""",
     }
 }
 
+
 class Generator:
     """
-    Handles the generation of answers using an LLM (Ollama) or fallback methods.
+    Handles the generation of answers using Groq API (cloud LLM) or fallback methods.
     """
-    def __init__(self):
-        self.model = OLLAMA_MODEL
-        self.base_url = OLLAMA_BASE_URL
-        print(f"DEBUG: Generator initialized with model='{self.model}' and base_url='{self.base_url}'")
-        # Initialize client with host
-        if OLLAMA_AVAILABLE:
-            self.client = ollama.Client(host=self.base_url)
-        else:
-            print("DEBUG: Ollama library NOT available")
-            self.client = None
 
-    def generate_answer(self, question: str, context: str, question_type: str = None, is_youtube: bool = False, history: list = None, recommendations: dict = None) -> str:
-        """Generate answer from context using Ollama or simple extraction."""
-        
-        # Auto-detect question type if not provided
+    def __init__(self):
+        self.model = GROQ_MODEL
+        self.api_key = GROQ_API_KEY
+
+        print(f"DEBUG: Generator initialized with model='{self.model}' via Groq API")
+
+        if GROQ_AVAILABLE and self.api_key:
+            self.client = Groq(api_key=self.api_key)
+            print("DEBUG: Groq client initialized successfully.")
+        else:
+            self.client = None
+            if not GROQ_AVAILABLE:
+                print("DEBUG: Groq library NOT available. Run: pip install groq")
+            if not self.api_key:
+                print("DEBUG: GROQ_API_KEY is missing. Check your .env file.")
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def generate_answer(
+        self,
+        question: str,
+        context: str,
+        question_type: str = None,
+        is_youtube: bool = False,
+        history: list = None,
+        recommendations: dict = None,
+    ) -> str:
+        """Generate an answer from context using Groq or a simple fallback."""
+
         if question_type is None:
             question_type = self._detect_question_type(question)
-            
-        # Check if Ollama should be used and is available
-        if USE_OLLAMA and OLLAMA_AVAILABLE:
+
+        if USE_GROQ and GROQ_AVAILABLE and self.client:
             try:
-                return self._generate_with_ollama(question, context, question_type, is_youtube, history, recommendations)
+                return self._generate_with_groq(
+                    question, context, question_type, is_youtube, history, recommendations
+                )
             except Exception as e:
-                logger.error(f"Ollama generation failed: {e}")
+                logger.error(f"Groq generation failed: {e}")
                 logger.info("Falling back to simple context display")
-        
-        # Fallback: Simple context display
+
+        # Fallback
         return f"Based on the course materials:\n\n{context[:800]}..."
-
-    def _detect_question_type(self, question: str) -> str:
-        """
-        Automatically interprets the question type based on heuristics.
-        """
-        question_lower = question.lower().strip()
-        
-        # 1. Check for MCQ
-        # Look for "A)", "B)", etc. or specific keywords
-        import re
-        if re.search(r"\b[A-D]\)", question) or \
-           any(keyword in question_lower for keyword in ["choose", "which of the following", "اختر", "أي مما يلي"]):
-            return "mcq"
-            
-        # 2. Check for True/False
-        if any(keyword in question_lower for keyword in ["true or false", "صح أم خطأ", "صح أو خطأ"]):
-            return "true_false"
-            
-        # 3. Check for Fill in the blank
-        if "____" in question or "..." in question or \
-           any(keyword in question_lower for keyword in ["complete", "fill in", "اكمل", "أكمل"]):
-            return "fill_blank"
-            
-        # 4. Check for Code
-        code_keywords = [
-            "code", "function", "variable", "class", "loop", "algorithm", "complexity", 
-            "syntax", "debug", "refactor", "كود", "دالة", "متغير", "خوارزمية"
-        ]
-        if "```" in question or any(keyword in question_lower for keyword in code_keywords):
-            return "code"
-            
-        # 5. Default to Explain
-        return "explain"
-
-    def _generate_with_ollama(self, question: str, context: str, question_type: str, is_youtube: bool, history: list = None, recommendations: dict = None) -> str:
-        """Generate answer using Ollama local LLM with language detection and history."""
-        
-        # Detect if question contains Arabic characters
-        has_arabic = any('\u0600' <= char <= '\u06FF' for char in question)
-        
-        # Get specific instruction or fallback to explain
-        q_type = question_type if question_type in QUESTION_TYPE_INSTRUCTIONS else "explain"
-        instruction = QUESTION_TYPE_INSTRUCTIONS[q_type]["ar" if has_arabic else "en"]
-
-        # Format history string
-        history_text = ""
-        if history:
-            history_text = "\n\n[CONVERSATION_HISTORY]\n"
-            for turn in history[-5:]:  # Last 5 turns
-                role = "User" if turn['role'] == 'user' else "Assistant"
-                history_text += f"{role}: {turn['content']}\n"
-            history_text += "---\n"
-        
-        # Format recommendations if available
-        rec_text = ""
-        if recommendations and recommendations.get('youtube'):
-            rec_text = "\n\n[RECOMMENDED_RESOURCES]\n"
-            rec_text += "YouTube Courses & Videos:\n"
-            for rec in recommendations['youtube']:
-                rec_text += f"- {rec['title']} ({rec['duration']}): {rec['link']}\n"
-            rec_text += "---\n"
-
-        if has_arabic:
-            prompt = f"""أنت مساعد تعليمي ذكي وخبير في البرمجة. سأزودك بمحتوى مقسم حسب المصدر أدناه (إذا وجد). {history_text} {rec_text}
-تعليمات هامة جداً:
-1. إذا كان السؤال عن الكود، يجب عليك التصرف كمعلم تقني واستخدام معرفتك العميقة بالبرمجة لشرح الكود خطوة بخطوة.
-2. إذا سأل الطالب عن معلومة وقدم رابط فيديو، ابحث أولاً في [SOURCE: YOUTUBE_VIDEO_TRANSCRIPT]. إذا وجدته، يجب أن يكون هو المصدر الأساسي والوحيد للإجابة ما لم يُطلب غير ذلك.
-3. إذا وجدت الإجابة في محتوى الفيديو، يجب عليك وبدون استثناء ذكر الوقت الدقيق الذي وردت فيه المعلومة باستخدام الطابع الزمني المزوّد (مثال: "ذكر المحاضر في فيديو '[العنوان]' عند الدقيقة [00:12:30] أن...").
-4. في حالة ملاحظة "[Transcription Blocked]" أو "[No Transcript Available]" مع وجود عنوان للفيديو، أخبر الطالب أنك حصلت على عنوان الفيديو ولكن لم تتمكن من قراءة التفاصيل، واعرض المساعدة باستخدام مواد الكورس الأخرى.
-5. في حالة الأسئلة التي تطلب "ترشيحات" أو "كورسات" (Recommendations)، يجب عليك فوراً وبشكل أساسي استخدام البيانات الموجودة في [RECOMMENDED_RESOURCES] وعرضها كروابط يوتيوب مباشرة.
-6. لا تعرض الترشيحات (Recommendations) أبداً إذا كان الطالب يطلب تلخيص الفيديو المزوّد (Summarize)؛ الترشيحات تكون فقط عند طلب "مصادر إضافية" أو "مزيد من المعلومات".
-7. ممنوع تماماً تقديم أي روابط بحث عامة أو روابط لمواقع أخرى غير اليوتيوب المزوّدة في [RECOMMENDED_RESOURCES].
-6. لا تبحث في محتوى الدروس ([SOURCE: OFFICIAL_COURSE_MATERIALS]) عن ترشيحات عامة إذا كان الطالب يطلب مصادر خارجية؛ استخدم فقط [RECOMMENDED_RESOURCES].
-7. ممنوع تماماً تقديم أي روابط بحث عامة أو روابط لمواقع أخرى غير اليوتيوب المزوّدة في [RECOMMENDED_RESOURCES].
-8. الإجابة يجب أن تبدأ بترشيحات اليوتيوب بشكل واضح جداً (العنوان، المدة، والرابط).
-9. لا تتجاهل روابط اليوتيوب أبداً إذا كانت متوفرة.
-10. الإجابة يجب أن تكون منسقة ومنظمة بشكل جيد (استخدم النقاط، العناوين الفرعية، والجداول إذا لزم الأمر).
-11. التحذير النهائي: إذا وجدت "لا توجد ترشيحات متوفرة حالياً" أو كانت القائمة فارغة، **ممنوع نهائياً** اقتراح أي كورسات أو قنوات من معرفتك الخاصة. في هذه الحالة قل فقط: "عذراً، لم أجد روابط يوتيوب مناسبة حالياً."
-
-تعليمات خاصة:
-{instruction}
-
-المحتوى المقدم:
-{context if context.strip() else "لا يوجد محتوى إضافي من المصادر."}
-
-[RECOMMENDED_RESOURCES]
-{rec_text if rec_text else "لا توجد ترشيحات متوفرة حالياً."}
-
-سؤال الطالب: {question}
-
-الإجابة:"""
-        else:
-            prompt = f"""You are a helpful teaching assistant and an experienced programming mentor. I will provide you with content separated by source below (if available). {history_text}
-IMPORTANT INSTRUCTIONS:
-1. If the question is code-related, act as a technical mentor and use your deep programming knowledge to explain the code thoroughly.
-2. If the student provides a link/video, attempt to answer from [SOURCE: YOUTUBE_VIDEO_TRANSCRIPT] first. This is your PRIMARY source.
-3. If the answer is found in the video transcript, you MUST include the exact timestamp for each point discussed (e.g., "The speaker mentions in the video '[Title]' at [00:05:20] that...").
-4. If you see "[Transcription Blocked]" or "[No Transcript Available]" but have a Video Title, inform the user that you identified the video but couldn't access its internal content, then offer to help using course materials.
-5. If the student asks for "recommendations", "courses", or "resources", prioritize the data in [RECOMMENDED_RESOURCES] and present them as direct links.
-6. NEVER show recommendations if the user is asking to summarize the provided video link, unless they specifically ask for "more" or "alternative" resources.
-6. DO NOT search through [SOURCE: OFFICIAL_COURSE_MATERIALS] for general recommendations if the student is asking for learning resources; use only the provided [RECOMMENDED_RESOURCES] section.
-7. Show the YouTube videos with their Title, Duration, and clickable direct Links.
-8. DO NOT provide general search links or mention other platforms. Only show the YouTube videos listed in [RECOMMENDED_RESOURCES].
-9. NEVER ignore the provided YouTube links if they are available.
-10. For code-related queries, you ARE allowed to use your general programming knowledge to explain syntax, complexity, and best practices. For general theory questions, stick to the provided materials.
-11. If the answer is missing from BOTH sources and the question is NOT code-related and NOT a request for recommendations, respond strictly with: "The answer is not available in the provided material."
-12. Use the [CONVERSATION_HISTORY] provided above to understand follow-up questions or references.
-13. Ensure the response is well-formatted using markdown (bullet points, subheadings, etc.).
-
-Special Instructions:
-{instruction}
-
-Provided Content:
-{context if context.strip() else "No additional context from sources."}
-
-[RECOMMENDED_RESOURCES]
-{rec_text if rec_text else "No specific recommendations found currently."}
-
-FINAL WARNING: If you see "No specific recommendations found currently." or if the list is empty, DO NOT suggest any channels, courses, OR links from your own knowledge. Say: "I'm sorry, I couldn't find any specific YouTube recommendations for this topic at the moment."
-
-Student Question: {question}
-
-Answer:"""
-
-        try:
-            response = self.client.generate(
-                model=self.model,
-                prompt=prompt
-            )
-            return response['response']
-        except Exception as e:
-            logger.error(f"Ollama generation failed in _generate_with_ollama: {e}")
-            return "Error: Failed to generate a response using the local model."
 
     def get_presentation_structure(self, content: str, title: str = "Presentation") -> list:
         """
         Uses the LLM to structure content into a list of slides for a presentation.
-        Returns a list of dictionaries: [{"title": "...", "content": ["...", "..."]}, ...]
+        Returns: [{"title": "...", "content": ["...", "..."]}, ...]
         """
-        if not USE_OLLAMA or not OLLAMA_AVAILABLE:
-            # Fallback: Just create a single slide with the content
+        if not USE_GROQ or not GROQ_AVAILABLE or not self.client:
             return [{"title": title, "content": [content[:500] + "..."]}]
 
         prompt = f"""You are a presentation expert. Structure the following content into a sequence of professional PowerPoint slides.
@@ -249,11 +136,11 @@ Return ONLY a valid JSON array of objects. Do not include any other text or expl
 [FORMAT EXAMPLE]
 [
   {{
-    "title": "Introduction to AI", 
+    "title": "Introduction to AI",
     "content": ["Definition of AI", "Brief history", "Core components"]
   }},
   {{
-    "title": "Machine Learning", 
+    "title": "Machine Learning",
     "content": ["Types of ML", "Supervised learning", "Unsupervised learning"]
   }}
 ]
@@ -264,23 +151,167 @@ Return ONLY a valid JSON array of objects. Do not include any other text or expl
 JSON Response:"""
 
         try:
-            response = self.client.generate(
+            response = self.client.chat.completions.create(
                 model=self.model,
-                prompt=prompt
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=2048,
+                temperature=0.3,
             )
-            text_response = response['response'].strip()
-            
-            # Debug tracking
+            text_response = response.choices[0].message.content.strip()
             logger.info(f"LLM Structure Response: {text_response[:500]}...")
-            
-            # Extract JSON if LLM included extra text
-            import json
-            import re
+
             json_match = re.search(r'\[\s*{.*}\s*\]', text_response, re.DOTALL)
             if json_match:
                 return json.loads(json_match.group(0))
-            else:
-                return json.loads(text_response)
+            return json.loads(text_response)
+
         except Exception as e:
             logger.error(f"Failed to structure presentation: {e}")
             return [{"title": title, "content": ["Error structuring content into slides."]}]
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _detect_question_type(self, question: str) -> str:
+        """Automatically detect question type based on heuristics."""
+        question_lower = question.lower().strip()
+
+        if re.search(r"\b[A-D]\)", question) or any(
+            kw in question_lower for kw in ["choose", "which of the following", "اختر", "أي مما يلي"]
+        ):
+            return "mcq"
+
+        if any(kw in question_lower for kw in ["true or false", "صح أم خطأ", "صح أو خطأ"]):
+            return "true_false"
+
+        if "____" in question or "..." in question or any(
+            kw in question_lower for kw in ["complete", "fill in", "اكمل", "أكمل"]
+        ):
+            return "fill_blank"
+
+        code_keywords = [
+            "code", "function", "variable", "class", "loop", "algorithm",
+            "complexity", "syntax", "debug", "refactor",
+            "كود", "دالة", "متغير", "خوارزمية",
+        ]
+        if "```" in question or any(kw in question_lower for kw in code_keywords):
+            return "code"
+
+        return "explain"
+
+    def _build_messages(
+        self,
+        question: str,
+        context: str,
+        question_type: str,
+        history: list,
+        rec_text: str,
+        has_arabic: bool,
+    ) -> list:
+        """Build the messages list for the Groq chat completion call."""
+
+        q_type = question_type if question_type in QUESTION_TYPE_INSTRUCTIONS else "explain"
+        instruction = QUESTION_TYPE_INSTRUCTIONS[q_type]["ar" if has_arabic else "en"]
+
+        # ── System prompt ──────────────────────────────────────────────
+        if has_arabic:
+            system_prompt = f"""أنت مساعد تعليمي ذكي وخبير في البرمجة. سأزودك بمحتوى مقسم حسب المصدر أدناه (إذا وجد).
+
+تعليمات هامة جداً:
+1. إذا كان السؤال عن الكود، تصرف كمعلم تقني واشرح الكود خطوة بخطوة.
+2. إذا سأل الطالب عن معلومة وقدم رابط فيديو، ابحث أولاً في [SOURCE: YOUTUBE_VIDEO_TRANSCRIPT]. إذا وجدته، يجب أن يكون المصدر الأساسي.
+3. إذا وجدت الإجابة في محتوى الفيديو، اذكر الوقت الدقيق (مثال: "ذكر المحاضر عند الدقيقة [00:12:30] أن...").
+4. في حالة ملاحظة "[Transcription Blocked]" أو "[No Transcript Available]"، أخبر الطالب أنك حصلت على عنوان الفيديو ولكن لم تتمكن من قراءة التفاصيل.
+5. في حالة الأسئلة التي تطلب "ترشيحات"، استخدم بيانات [RECOMMENDED_RESOURCES] فقط وعرضها كروابط يوتيوب مباشرة.
+6. لا تعرض الترشيحات إذا كان الطالب يطلب تلخيص الفيديو.
+7. ممنوع تماماً تقديم أي روابط بحث عامة أو روابط لمواقع أخرى.
+8. الإجابة يجب أن تكون منسقة ومنظمة (استخدم النقاط والعناوين الفرعية).
+9. إذا كانت قائمة الترشيحات فارغة، قل فقط: "عذراً، لم أجد روابط يوتيوب مناسبة حالياً."
+
+تعليمات خاصة بنوع السؤال:
+{instruction}"""
+        else:
+            system_prompt = f"""You are a helpful teaching assistant and an experienced programming mentor.
+
+IMPORTANT INSTRUCTIONS:
+1. If the question is code-related, act as a technical mentor and explain thoroughly.
+2. Answer from [SOURCE: YOUTUBE_VIDEO_TRANSCRIPT] first if a video link was provided. Include exact timestamps for each point (e.g., "The speaker mentions at [00:05:20] that...").
+3. If you see "[Transcription Blocked]" or "[No Transcript Available]", inform the user and offer to help using course materials.
+4. If the student asks for "recommendations" or "resources", use ONLY the [RECOMMENDED_RESOURCES] section.
+5. NEVER show recommendations when the user asks to summarize the provided video.
+6. DO NOT provide general search links or mention other platforms.
+7. For code questions you MAY use your general programming knowledge. For theory questions, stick to provided materials.
+8. If the answer is missing from both sources and the question is NOT code-related, respond with: "The answer is not available in the provided material."
+9. Use conversation history to understand follow-up questions.
+10. Format responses with markdown (bullet points, subheadings, code blocks).
+11. If the recommendations list is empty, say: "I'm sorry, I couldn't find any specific YouTube recommendations for this topic at the moment."
+
+Special instructions for this question type:
+{instruction}"""
+
+        # ── User content ───────────────────────────────────────────────
+        if has_arabic:
+            user_content = f"""المحتوى المقدم:
+{context if context.strip() else "لا يوجد محتوى إضافي من المصادر."}
+
+[RECOMMENDED_RESOURCES]
+{rec_text if rec_text else "لا توجد ترشيحات متوفرة حالياً."}
+
+سؤال الطالب: {question}"""
+        else:
+            user_content = f"""Provided Content:
+{context if context.strip() else "No additional context from sources."}
+
+[RECOMMENDED_RESOURCES]
+{rec_text if rec_text else "No specific recommendations found currently."}
+
+Student Question: {question}"""
+
+        # ── Assemble messages (system → history → current user turn) ───
+        messages = [{"role": "system", "content": system_prompt}]
+
+        if history:
+            for turn in history[-5:]:   # last 5 turns for context window efficiency
+                role = "user" if turn["role"] == "user" else "assistant"
+                messages.append({"role": role, "content": turn["content"]})
+
+        messages.append({"role": "user", "content": user_content})
+        return messages
+
+    def _generate_with_groq(
+        self,
+        question: str,
+        context: str,
+        question_type: str,
+        is_youtube: bool,
+        history: list = None,
+        recommendations: dict = None,
+    ) -> str:
+        """Generate an answer using the Groq cloud API."""
+
+        has_arabic = any("\u0600" <= ch <= "\u06FF" for ch in question)
+
+        # Format recommendations
+        rec_text = ""
+        if recommendations and recommendations.get("youtube"):
+            rec_text = "YouTube Courses & Videos:\n"
+            for rec in recommendations["youtube"]:
+                rec_text += f"- {rec['title']} ({rec['duration']}): {rec['link']}\n"
+
+        messages = self._build_messages(
+            question, context, question_type, history or [], rec_text, has_arabic
+        )
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_tokens=2048,
+                temperature=0.5,
+            )
+            return response.choices[0].message.content
+
+        except Exception as e:
+            logger.error(f"Groq generation failed in _generate_with_groq: {e}")
+            return "Error: Failed to generate a response using the Groq API."

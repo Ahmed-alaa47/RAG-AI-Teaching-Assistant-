@@ -12,8 +12,21 @@ import logging
 import os
 import re
 
-# logging.basicConfig(level=logging.INFO)  # Removed central logging config
 logger = logging.getLogger(__name__)
+
+# Phrases that indicate the answer was not found in course materials
+NOT_COVERED_PHRASES = [
+    "not covered in the course materials",
+    "غير مذكور في المواد الدراسية",
+    "i can only answer questions based on the provided documents",
+    "لا أستطيع الإجابة إلا بناءً على المستندات المقدمة",
+]
+
+
+def _is_not_covered(answer: str) -> bool:
+    """Return True if the answer indicates the topic is not in the course materials."""
+    answer_lower = answer.lower()
+    return any(phrase in answer_lower for phrase in NOT_COVERED_PHRASES)
 
 
 class RAGPipeline:
@@ -27,52 +40,48 @@ class RAGPipeline:
         self.recommender = RecommendationEngine()
         self.presentation_maker = PresentationMaker()
         self.is_initialized = False
-    
+
     def initialize(self, data_path: str = None):
         """Initialize the pipeline by processing documents and creating vector store."""
         from config.settings import CHUNKS_CACHE_PATH
         if data_path is None:
             data_path = str(RAW_DATA_DIR)
-        
+
         logger.info("Initializing RAG pipeline...")
-        
-        # Check if cache exists
+
         chunks = []
         if os.path.exists(CHUNKS_CACHE_PATH):
             logger.info(f"Loading chunks from cache: {CHUNKS_CACHE_PATH}")
             chunks = self.document_processor.load_chunks(CHUNKS_CACHE_PATH)
-        
-        # If cache empty or not found, process documents
+
         if not chunks:
             logger.info("Processing documents (no cache found or cache empty)...")
             chunks = self.document_processor.process_documents(data_path)
-            
+
             if not chunks:
                 raise ValueError("No documents were processed. Check your data directory.")
-            
-            # Save to cache
+
             self.document_processor.save_chunks(chunks, CHUNKS_CACHE_PATH)
-        
-        # Create vector store
+
         logger.info("Creating/Updating vector store...")
         self.vector_store_manager.create_vector_store(chunks)
-        
+
         self.is_initialized = True
         logger.info("RAG pipeline initialized successfully!")
-    
+
     def add_documents(self, source_path: str):
         """Add new documents to existing vector store."""
         logger.info(f"Adding documents from {source_path}")
-        
+
         chunks = self.document_processor.process_documents(source_path)
-        
+
         if not chunks:
             logger.warning("No new documents were processed")
             return
-        
+
         self.vector_store_manager.add_documents(chunks)
         logger.info("Documents added successfully!")
-    
+
     def query(self, question: str, history: list = None, forced_documents: List[Document] = None) -> Dict:
         """Query the RAG system and return answer with sources."""
         if not self.is_initialized:
@@ -86,12 +95,12 @@ class RAGPipeline:
                     "answer": "Vector store not found. Please run initialization first.",
                     "sources": []
                 }
-        
+
         logger.info(f"Processing query: {question}")
 
         # Detect language early (Arabic vs English)
         has_arabic = any('\u0600' <= char <= '\u06FF' for char in question)
-        
+
         # 0. Intent Detection & Query Cleaning
         question_lower = question.lower()
         presentation_keywords = [
@@ -102,33 +111,30 @@ class RAGPipeline:
             "recommend", "suggest", "more resources", "other courses", "another video",
             "مقترح", "ترشيح", "مصادر أخرى", "كورس آخر", "نرشح", "زيدني"
         ]
-        
+
         is_presentation = any(keyword in question_lower for keyword in presentation_keywords)
         is_recommendation = any(keyword in question_lower for keyword in recommendation_keywords)
-        
-        # Strip YouTube URLs from the search query to prevent accidental recommendation triggers
+
         url_pattern = r'https?://(?:www\.)?youtube\.com/watch\?v=[0-9A-Za-z_-]{11}|https?://youtu\.be/[0-9A-Za-z_-]{11}'
         search_query = re.sub(url_pattern, '', question_lower)
-        
-        # Clean query for retrieval/search
+
         filler_phrases = presentation_keywords + recommendation_keywords + [
-            "can you", "i want to learn", "give me", "article about", "about", 
+            "can you", "i want to learn", "give me", "article about", "about",
             "some", "best", "please", "based on the course materials", "based on",
             "from the materials", "summarize", "explain", "تلخيص", "شرح", "وضوح",
             "رشح", "ممكن", "عايز", "اتعلم", "عن", "افضل", "أفضل", "لي", "اعطني"
         ]
         for phrase in filler_phrases:
             search_query = search_query.replace(phrase, "")
-        
-        # Clean redundant spacing and punctuation
+
         search_query = " ".join(search_query.split())
         search_query = search_query.strip(" ?!.،؟")
-        
-        # Fallback to full question (with URL stripped) if cleaning stripped everything
+
         if not search_query or len(search_query) < 2:
             search_query = re.sub(url_pattern, '', question).strip()
-            if not search_query: search_query = "general"
-            
+            if not search_query:
+                search_query = "general"
+
         logger.info(f"Cleaned search query for retrieval: '{search_query}'")
 
         # 1. Fetch YouTube transcript if a URL is provided
@@ -139,40 +145,36 @@ class RAGPipeline:
             "duration": youtube_data.get("duration"),
             "video_id": youtube_data.get("video_id")
         } if youtube_data else None
-        
+
         # 2. Standard RAG process (Course Materials)
         try:
             if forced_documents:
                 raw_documents = forced_documents
                 logger.info(f"Using {len(raw_documents)} forced documents (skipping retrieval)")
             else:
-                # Use the cleaned search_query for much better retrieval
                 raw_documents = self.retriever.retrieve(search_query)
                 logger.info(f"Retrieved {len(raw_documents)} raw documents")
-            
-            # Filter out assessment/question-based documents
+
             documents = []
             assessment_keywords = [
-                "which of the following", "question", "solve", 
-                "a)", "b)", "c)", "d)", 
+                "which of the following", "question", "solve",
+                "a)", "b)", "c)", "d)",
                 "اختر", "أي مما يلي"
             ]
-            
+
             for doc in raw_documents:
-                # If these are forced documents (e.g. from an upload), skip assessment filtering
-                # to ensure the user gets an answer even if the file looks like a test.
                 if forced_documents:
                     documents.append(doc)
                     continue
 
                 content_lower = doc.page_content.lower()
                 is_assessment = any(keyword in content_lower for keyword in assessment_keywords)
-                
+
                 if not is_assessment:
                     documents.append(doc)
                 else:
                     logger.info(f"Filtered out assessment document: {doc.page_content[:50]}...")
-            
+
             logger.info(f"Remaining documents after filtering: {len(documents)}")
         except Exception as e:
             logger.error(f"Error retrieving documents: {e}")
@@ -180,124 +182,117 @@ class RAGPipeline:
 
         # 3. Create structured hybrid context
         context_parts = []
-        
+
         if youtube_data:
             meta_header = f"[VIDEO_TITLE: {video_meta['title']}]\n[VIDEO_DURATION: {video_meta['duration']}]\n"
             raw_transcript = youtube_data.get("transcript")
-            
+
             if raw_transcript and "[ERROR:" not in str(raw_transcript):
                 content = raw_transcript
             elif raw_transcript and "[ERROR:" in str(raw_transcript):
                 content = f"[Transcription Blocked: {raw_transcript}]"
             else:
                 content = "[No Transcript Available. Suggest installing ffmpeg for local transcription.]"
-            
+
             context_parts.append("[SOURCE: YOUTUBE_VIDEO_TRANSCRIPT]\n" + meta_header + content)
-        
+
         if documents:
             course_text = "\n\n".join([doc.page_content for doc in documents])
             context_parts.append("[SOURCE: OFFICIAL_COURSE_MATERIALS]\n" + course_text)
-        
+
         full_context = "\n\n" + "\n\n---\n\n".join(context_parts) if context_parts else ""
-        
+
         recommendation_data = None
         if is_recommendation:
             logger.info("Recommendation intent detected, fetching additional resources...")
-            
-            # Smarter recommendation query: If cleaning left us with nothing, use the video title
+
             rec_query = search_query
             if (not rec_query or rec_query == "general") and video_meta and video_meta['title'] != "Unknown Title":
                 rec_query = video_meta['title']
                 logger.info(f"Using video title for recommendations: '{rec_query}'")
-            
+
             recommendation_data = self.recommender.get_all_recommendations(rec_query)
-            
+
             yt_count = len(recommendation_data.get('youtube', []))
             logger.info(f"Found {yt_count} YouTube recommendations for '{rec_query}'")
 
         # 4.5 Handle Presentation intent
         if is_presentation:
             logger.info("Presentation intent detected...")
-            
-            # Combine available context to use as source for slides
+
             slide_source_content = full_context if full_context else question
-            
-            # Get structured slides from LLM
+
             logger.info("Structuring slides using LLM...")
             slides_data = self.generator.get_presentation_structure(slide_source_content)
-            
-            # Scan for local 'uploaded' images
+
             image_dir = os.path.join("data", "presentation_images")
             local_images = []
             if os.path.exists(image_dir):
-                # Get common image extensions
                 extensions = ('.png', '.jpg', '.jpeg', '.webp')
                 local_images = [
                     os.path.join(image_dir, f) for f in os.listdir(image_dir)
                     if f.lower().endswith(extensions)
                 ]
-                local_images.sort() # Ensure consistent order
+                local_images.sort()
                 logger.info(f"Found {len(local_images)} local images for the presentation")
-            
-            # Create the presentation with local images
+
             filename = "generated_presentation.pptx"
             pptx_path = self.presentation_maker.create_presentation(slides_data, local_images, filename)
-            
-            if pptx_path:
-                if has_arabic:
-                    msg = f"لقد قمت بإنشاء العرض التقديمي لك. يمكنك العثور عليه هنا: {pptx_path}"
-                else:
-                    msg = f"I have created a presentation for you. You can find it here: {pptx_path}"
-                return {
-                    "answer": msg,
-                    "sources": [],
-                    "presentation_path": pptx_path
-                }
-            else:
-                if has_arabic:
-                    msg = "حاولت إنشاء عرض تقديمي ولكن حدث خطأ ما أثناء إنشاء الملف."
-                else:
-                    msg = "I tried to create a presentation but something went wrong during the file generation."
-                return {
-                    "answer": msg,
-                    "sources": []
-                }
 
-        # 5. Handle empty context return - only if NO recommendations either
+            if pptx_path:
+                msg = (
+                    f"لقد قمت بإنشاء العرض التقديمي لك. يمكنك العثور عليه هنا: {pptx_path}"
+                    if has_arabic else
+                    f"I have created a presentation for you. You can find it here: {pptx_path}"
+                )
+                return {"answer": msg, "sources": [], "presentation_path": pptx_path}
+            else:
+                msg = (
+                    "حاولت إنشاء عرض تقديمي ولكن حدث خطأ ما أثناء إنشاء الملف."
+                    if has_arabic else
+                    "I tried to create a presentation but something went wrong during the file generation."
+                )
+                return {"answer": msg, "sources": []}
+
+        # 5. Handle empty context — only if NO recommendations either
         if not context_parts and not recommendation_data:
             return {
-                "answer": "لم أتمكن من العثور على معلومات ذات صلة في المواد الدراسية ولم أجد ترشيحات خارجية." if has_arabic else "I couldn't find any relevant information in the video or course materials, and no recommendations were found.",
+                "answer": (
+                    "لم أتمكن من العثور على معلومات ذات صلة في المواد الدراسية ولم أجد ترشيحات خارجية."
+                    if has_arabic else
+                    "I couldn't find any relevant information in the video or course materials, and no recommendations were found."
+                ),
                 "sources": []
             }
-        
-        # full_context already defined above
-        
+
         # 6. Generate answer with history
         answer = self.generator.generate_answer(
-            question, 
-            full_context, 
-            is_youtube=bool(youtube_data), 
+            question,
+            full_context,
+            is_youtube=bool(youtube_data),
             history=history,
             recommendations=recommendation_data
         )
-        
-        # Prepare sources for UI
+
+        # 7. Prepare sources — ONLY if the topic was actually found in the materials
         sources = []
-        if youtube_data:
-            sources.append({
-                "content": f"Video: {video_meta['title']} ({video_meta['duration']})", 
-                "metadata": {"source": "YouTube", "video_id": video_meta['video_id']}
-            })
-        
-        for doc in documents:
-            sources.append({
-                "content": doc.page_content[:200] + "...",
-                "metadata": doc.metadata
-            })
-        
+        if not _is_not_covered(answer):
+            if youtube_data:
+                sources.append({
+                    "content": f"Video: {video_meta['title']} ({video_meta['duration']})",
+                    "metadata": {"source": "YouTube", "video_id": video_meta['video_id']}
+                })
+
+            for doc in documents:
+                sources.append({
+                    "content": doc.page_content[:200] + "...",
+                    "metadata": doc.metadata
+                })
+        else:
+            logger.info("Answer indicates topic not covered — skipping sources.")
+
         return {
             "answer": answer,
             "sources": sources,
             "context": full_context
         }
-    

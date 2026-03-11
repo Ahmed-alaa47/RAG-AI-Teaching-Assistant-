@@ -11,3 +11,5 @@ env/
 
 # Data folders
 AI-Assistant/data/processed/
+AI-Assistant/config/.env
+
